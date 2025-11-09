@@ -33,13 +33,11 @@ class FunctionManager:
         """
         timeout: 总超时时间(秒)
         check_interval: 每次轮询前 sleep 的时间(秒), 此处设置为10ms
-        requests timeout: 单次请求超时, 尝试设置为 0.5s
         """
         start_time = time.time()
-        req_timeout = 0.5
         while time.time() - start_time < timeout:
             try:
-                response = requests.get(f"http://127.0.0.1:{host_port}/status", timeout=req_timeout)
+                response = requests.get(f"http://127.0.0.1:{host_port}/status", timeout=check_interval)
                 if response.status_code == 200:
                     try:
                         data = response.json()
