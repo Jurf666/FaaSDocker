@@ -374,6 +374,67 @@ def _run_svd_workflow(payload):
         print(f"\n[svd_workflow] --- 失败! ---")
         print(f"[svd_workflow] 工作流执行出错: {e}")
 
+# --- 新增：硬编码的 WordCount 工作流逻辑 ---
+def _run_wordcount_workflow(payload):
+    """
+    在后台线程中运行的 WordCount MapReduce 工作流。
+    """
+    print("[wordcount_workflow] WordCount 工作流已启动...")
+    try:
+        # --- 1. 获取工作流输入 ---
+        # payload 示例: {"input_filename": "book.txt", "slice_num": 4}
+        input_filename = payload.get("input_filename")
+        slice_num = payload.get("slice_num", 4)
+        
+        if not input_filename:
+            print("[wordcount_workflow] 错误: payload 中缺少 input_filename。")
+            return
+        
+        # --- 2. 调度 WordCount Start (分割) ---
+        print("[wordcount_workflow] 正在调度 WORDCOUNT_START (分割)...")
+        start_payload = {
+            "input_filename": input_filename,
+            "slice_num": slice_num
+        }
+        start_result, _ = _dispatch_request("wordcount_start", start_payload)
+        chunk_paths = start_result['chunk_paths'] # [ {"chunk_paths": ["/storage/...", ...]} ]
+        print(f"[wordcount_workflow] WORDCOUNT_START 完成。创建了 {len(chunk_paths)} 个文本块。")
+
+        # --- 3. 调度 WordCount Count (并行 Map) ---
+        print("[wordcount_workflow] 正在调度 WORDCOUNT_COUNT (并行)...")
+        
+        def _count_task(chunk_path):
+            print(f"[wordcount_workflow]  > 开始计数: {chunk_path}")
+            task_payload = {'chunk_path': chunk_path}
+            result, _ = _dispatch_request("wordcount_count", task_payload)
+            print(f"[wordcount_workflow]  > 完成计数: {chunk_path}")
+            return result['result_path'] # 返回部分结果JSON文件的路径
+
+        count_results_paths = []
+        with ThreadPoolExecutor(max_workers=len(chunk_paths)) as executor:
+            count_results_paths = list(executor.map(_count_task, chunk_paths))
+        
+        print("[wordcount_workflow] WORDCOUNT_COUNT 完成。")
+        
+        # --- 4. 调度 WordCount Merge (Reduce) ---
+        print("[wordcount_workflow] 正在调度 WORDCOUNT_MERGE...")
+        merge_payload = {
+            'result_paths': count_results_paths
+        }
+        merge_result, _ = _dispatch_request("wordcount_merge", merge_payload)
+        final_word_count = merge_result['final_word_count']
+        print("[wordcount_workflow] WORDCOUNT_MERGE 完成。")
+
+        print(f"\n[wordcount_workflow] --- 成功! ---")
+        # 我们只打印前 10 个和总数，以防字典太大
+        top_10 = sorted(final_word_count.items(), key=lambda item: item[1], reverse=True)[:10]
+        print(f"[wordcount_workflow] 最终结果: 总独特单词数 = {len(final_word_count)}")
+        print(f"[wordcount_workflow] 出现次数最多的前10个单词: {top_10}")
+
+    except Exception as e:
+        print(f"\n[wordcount_workflow] --- 失败! ---")
+        print(f"[wordcount_workflow] 工作流执行出错: {e}")
+
 # --- 新增：工作流调度接口 ---
 @app.route('/dispatch_workflow', methods=['POST'])
 def dispatch_workflow():
@@ -429,6 +490,19 @@ def dispatch_workflow():
             "status": "started",
             "workflow_name": "svd",
             "message": "SVD 工作流已在后台启动。请检查控制器日志。"
+        }), 202
+    elif workflow_name == "wordcount":
+        thread = threading.Thread(
+            target=_run_wordcount_workflow, # <-- 调用新函数
+            args=(payload,)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "status": "started",
+            "workflow_name": "wordcount",
+            "message": "WordCount 工作流已在后台启动。请检查控制器日志。"
         }), 202
     else:
         return jsonify({"error": f"未知的 workflow_name: {workflow_name}"}), 404
