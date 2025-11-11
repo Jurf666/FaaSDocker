@@ -1,80 +1,64 @@
-# recommend not to use the alpine one, it lacks lots of dependencies
-# the slim one ocuppies about 2x space compared to alpine one
-# FROM python:3.7-alpine
-# FROM docker.io/valian/docker-python-opencv-ffmpeg:py3
-FROM python:3.7-slim
-# FROM docker.io/jrottenberg/ffmpeg:4.1-alpine
-
-COPY pip.conf /etc/pip.conf
-
-# RUN apt-get -y update && \
-#    apt-get -y upgrade
-
-# RUN apt-get -y install gpg
-
-# RUN apt-key adv –keyserver keyserver.ubuntu.com –recv-keys 3B4FE6ACC0B21F32
-
-# RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 40976EAF437D05B5
-# RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 3B4FE6ACC0B21F32
-
-# COPY sources.list /etc/apt/sources.list
-
-# RUN apt-get -y update && \
-#    apt-get -y upgrade
-
-# RUN apt-get -y install ffmpeg
-
-RUN KEYRING_PATH=/usr/share/keyrings/debian-archive-keyring.gpg && \
-    echo "deb [signed-by=${KEYRING_PATH}] http://deb.debian.org/debian bookworm main non-free" > /etc/apt/sources.list.d/non-free.list && \
-    echo "deb [signed-by=${KEYRING_PATH}] http://deb.debian.org/debian bookworm-updates main non-free" >> /etc/apt/sources.list.d/non-free.list && \
-    echo "deb [signed-by=${KEYRING_PATH}] http://deb.debian.org/debian-security bookworm-security main non-free" >> /etc/apt/sources.list.d/non-free.list
+# ----------------------------------------------------------------------
+# 1. 基础镜像
+#    - 我们使用 3.9-slim (基于 Debian 11 "Bullseye")
+#    - 它受支持，并且与 tensorflow 和其他库兼容
+#    - 它自带正确的软件源，不再需要修改 sources.list
+# ----------------------------------------------------------------------
+FROM python:3.9-slim
 
 # ----------------------------------------------------------------------
-# 🎯 步骤 2: 安装系统依赖
+# 2. 安装系统依赖
 # ----------------------------------------------------------------------
-RUN apt-get -y update && \
-    apt-get -y install --no-install-recommends \
-        # 视频处理
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        # Video 工作流需要
         ffmpeg \
-        # 图像和通用库
+        # Recognizer 工作流需要
+        tesseract-ocr \
+        libgl1 \
+        libglib2.0-0 \
         libsm6 \
         libxext6 \
-        libjpeg-dev \
-        zlib1g-dev \
-        # 清理
-        && rm -rf /var/lib/apt/lists/*
+    # 清理
+    && rm -rf /var/lib/apt/lists/*
 
-# fulfill the structure requirement of proxy
+# ----------------------------------------------------------------------
+# 3. 复制 FaaS 平台代码
+# ----------------------------------------------------------------------
+# (这部分与您的代码相同)
 RUN mkdir /proxy && \
     mkdir /proxy/exec
 
-# copy the proxy server
 COPY proxy.py /proxy/
-# 假设 actions 目录与 Dockerfile 在同一目录
 COPY actions /proxy/exec/actions
+COPY models/ /proxy/
 
-# the work dir of proxy is under exec/
+# (可选) 复制您的模型文件，如果它们在本地的话
+# COPY models/ /proxy/models/
+
 WORKDIR /proxy/exec
-
-# proxy server runs under port 5000
 EXPOSE 5000
 
-# for alpine base only
-# RUN apk update && \
-#     apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev make && \
-#     pip install --no-cache-dir gevent flask && \
-#     apk del .build-deps
-
-RUN pip3 install --no-cache-dir \
+# ----------------------------------------------------------------------
+# 4. 安装 Python 依赖
+# ----------------------------------------------------------------------
+# 复制 requirements.txt (推荐) 或直接安装 (如下)
+# 我们只安装 proxy 和 actions 明确需要的包
+RUN pip install --no-cache-dir \
+    # Proxy.py 需要
     gevent \
     flask \
-    boto3 \
+    # Recognizer Actions 需要
+    googletrans==4.0.0-rc1 \
+    tensorflow-cpu \
+    opencv-python-headless \
+    pytesseract \
     numpy \
     Pillow \
-    scikit-learn \
-    markdown \
-    requests \
-    scikit-video \
+    # 您原始 Action 中的遗留依赖
     couchdb
 
+# ----------------------------------------------------------------------
+# 5. 启动命令
+# ----------------------------------------------------------------------
 CMD [ "python3", "/proxy/proxy.py" ]

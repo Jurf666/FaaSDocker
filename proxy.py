@@ -25,6 +25,7 @@ class ActionRunner: #一个蓝图，一个工厂，用于创建执行器对象
             code = compile(f.read(), filename, mode='exec')
 
         self.action_context = {} #清空上下文，创建一个干净的字典，用于存储 matmul Action 的所有代码元素？？？
+        self.action_context['__file__'] = filename # 手动注入 __file__ 变量
         exec(code, self.action_context) #核心： 运行 matmul/main.py 中的所有顶级代码（import numpy、def main 等）。运行结束后，self.action_context 字典中就有了 main 函数和 np
 
         return True

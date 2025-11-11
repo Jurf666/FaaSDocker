@@ -1,5 +1,5 @@
 # controller.py
-from flask import Flask, request, jsonify
+from flask import Flask, json, request, jsonify
 import threading
 from function_manager import FunctionManager #
 import atexit
@@ -98,6 +98,18 @@ def _dispatch_request(function_name, payload):
     
     except Exception as e:
         print(f"[_dispatch_request] 调用容器 {container_id[:12]} 时出错: {e}")
+        try:
+            print(f"--- 正在抓取容器 {container_id[:12]} 的日志 ---")
+            # 我们有 manager 和 container_id，可以获取 container 对象
+            with manager.lock:
+                if container_id in manager.containers:
+                    container_obj = manager.containers[container_id]["container_obj"]
+                    # 获取最后50行日志
+                    logs = container_obj.logs(tail=50).decode('utf-8', errors='ignore')
+                    print(logs)
+            print(f"--- 容器日志结束 ---")
+        except Exception as log_e:
+            print(f"[_dispatch_request] 尝试获取日志时出错: {log_e}")
         raise e # 重新抛出异常，让上层(工作流)知道失败了
     finally:
         # 3. 释放容器 (来自原始 /dispatch 的 finally 块)
@@ -193,6 +205,108 @@ def _run_video_workflow(payload):
         print(f"\n[video_workflow] --- 失败! ---")
         print(f"[video_workflow] 工作流执行出错: {e}\n")
 
+# --- 新增：硬编码的 Recognizer 工作流逻辑 ---
+def _run_recognizer_workflow(payload):
+    """
+    在后台线程中运行的图像审查工作流。
+    """
+    print("[recognizer_workflow] 图像审查工作流已启动...")
+    try:
+        # --- 1. 获取工作流输入 ---
+        # 假设 payload 包含 {"image_filename": "my_test_image.png"}
+        image_filename = payload.get("image_filename")
+        if not image_filename:
+            print("[recognizer_workflow] 错误: payload 中缺少 image_filename。")
+            return
+
+        # --- 2. 触发 "upload" (它只返回路径) ---
+        print("[recognizer_workflow] 正在调度 UPLOAD (获取路径)...")
+        upload_payload = {"image_filename": image_filename}
+        upload_result, _ = _dispatch_request("recognizer_upload", upload_payload)
+        image_path = upload_result['image_path']
+        print(f"[recognizer_workflow] UPLOAD 完成。图像位于 {image_path}")
+
+        # --- 3. 并行分析 (图像 + 提取) ---
+        print("[recognizer_workflow] 正在调度并行分析 (Adult, Violence, Extract)...")
+        
+        # 我们需要使用线程池来并行执行 _dispatch_request
+        # 我们将同时运行 adult, violence, 和 extract
+        
+        analysis_results = {}
+        text_from_extract = ""
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            # 提交任务
+            future_adult = executor.submit(_dispatch_request, "recognizer_adult", {"image_path": image_path})
+            future_violence = executor.submit(_dispatch_request, "recognizer_violence", {"image_path": image_path})
+            future_extract = executor.submit(_dispatch_request, "recognizer_extract", {"image_path": image_path})
+
+            # 获取结果
+            # .result() 会阻塞，直到该任务完成
+            
+            # (注意: _dispatch_request 返回 (result_payload, container_id))
+            analysis_results["adult"] = future_adult.result()[0]
+            analysis_results["violence"] = future_violence.result()[0]
+            
+            extract_result = future_extract.result()[0]
+            analysis_results["extract"] = extract_result
+            text_from_extract = extract_result.get("text", "")
+
+        print(f"[recognizer_workflow] 图像分析完成。")
+        print(f"[recognizer_workflow] > Adult: {analysis_results['adult']}")
+        print(f"[recognizer_workflow] > Violence: {analysis_results['violence']}")
+
+        # --- 4. 并行文本分析 (Censor + Translate) ---
+        print("[recognizer_workflow] 正在调度并行文本分析 (Censor, Translate)...")
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_censor = executor.submit(_dispatch_request, "recognizer_censor", {"text": text_from_extract})
+            future_translate = executor.submit(_dispatch_request, "recognizer_translate", {"text": text_from_extract})
+
+            analysis_results["censor"] = future_censor.result()[0]
+            analysis_results["translate"] = future_translate.result()[0]
+
+        print(f"[recognizer_workflow] 文本分析完成。")
+        print(f"[recognizer_workflow] > Censor: {analysis_results['censor']}")
+        print(f"[recognizer_workflow] > Translate: {analysis_results['translate']['translated_text']}")
+
+        # --- 5. 决策 (在 Controller 中) ---
+        is_illegal_adult = analysis_results["adult"].get("illegal", False)
+        is_illegal_violence = analysis_results["violence"].get("illegal", False)
+        is_illegal_censor = analysis_results["censor"].get("illegal", False)
+        
+        final_illegal_flag = is_illegal_adult or is_illegal_violence or is_illegal_censor
+        
+        print(f"[recognizer_workflow] 决策: Adult={is_illegal_adult}, Violence={is_illegal_violence}, Censor={is_illegal_censor} -> FinalDecision={final_illegal_flag}")
+
+        final_image_path = image_path # 默认是原始图像
+
+        # --- 6. 处理 (如果需要) ---
+        if final_illegal_flag:
+            print("[recognizer_workflow] 图像非法。正在调度 MOSAIC...")
+            mosaic_result, _ = _dispatch_request("recognizer_mosaic", {"image_path": image_path})
+            final_image_path = mosaic_result.get("mosaic_image_path")
+            print(f"[recognizer_workflow] MOSAIC 完成。处理后的图像位于 {final_image_path}")
+        else:
+            print("[recognizer_workflow] 图像安全。跳过 MOSAIC。")
+
+        # --- 7. 最终输出 ---
+        final_result = {
+            "illegal": final_illegal_flag,
+            "final_image_path": final_image_path,
+            "translated_text": analysis_results["translate"].get("translated_text"),
+            "details": {
+                "adult_check": analysis_results["adult"],
+                "violence_check": analysis_results["violence"],
+                "censor_check": analysis_results["censor"],
+            }
+        }
+        
+        print(f"\n[recognizer_workflow] --- 成功! ---")
+        print(f"[recognizer_workflow] 最终结果: {json.dumps(final_result, indent=2)}\n")
+
+    except Exception as e:
+        print(f"\n[recognizer_workflow] --- 失败! ---")
+        print(f"[recognizer_workflow] 工作流执行出错: {e}\n")
 
 # --- 新增：工作流调度接口 ---
 @app.route('/dispatch_workflow', methods=['POST'])
@@ -223,6 +337,20 @@ def dispatch_workflow():
             "workflow_name": "video",
             "message": "视频工作流已在后台启动。请检查控制器日志。"
         }), 202 # 202 "已接受" 是用于异步任务的标准状态码
+    
+    elif workflow_name == "recognizer":
+        thread = threading.Thread(
+            target=_run_recognizer_workflow, # <-- 调用新函数
+            args=(payload,)
+        )
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "status": "started",
+            "workflow_name": "recognizer",
+            "message": "图像审查工作流已在后台启动。请检查控制器日志。"
+        }), 202
     
     else:
         return jsonify({"error": f"未知的 workflow_name: {workflow_name}"}), 404
