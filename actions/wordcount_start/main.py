@@ -13,7 +13,7 @@ def main(event):
 
     # 1. 定义输入和输出路径
     input_filepath = os.path.join(STORAGE_DIR, 'sources', input_filename)
-    output_dir = os.path.join(STORAGE_DIR, 'wordcount_input')
+    output_dir = os.path.join(STORAGE_DIR,'output', 'wordcount_start')
     os.makedirs(output_dir, exist_ok=True)
     
     if not os.path.exists(input_filepath):

@@ -1,4 +1,0 @@
-file '/storage/transcode_output/transcoded_split_my_video_piece_00.avi'
-file '/storage/transcode_output/transcoded_split_my_video_piece_01.avi'
-file '/storage/transcode_output/transcoded_split_my_video_piece_02.avi'
-file '/storage/transcode_output/transcoded_split_my_video_piece_03.avi'

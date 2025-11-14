@@ -22,7 +22,7 @@ def main(event):
     u, s, v = np.linalg.svd(mat_slice, full_matrices=False) #
     
     # 3. 确保输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'svd_output')
+    output_dir = os.path.join(STORAGE_DIR, 'output', 'svd_compute')
     os.makedirs(output_dir, exist_ok=True)
     
     # 4. 将 u, s, v 结果保存到 /storage

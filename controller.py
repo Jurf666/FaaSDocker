@@ -6,8 +6,13 @@ import atexit
 import time
 import requests  # <-- 需要导入 requests
 from concurrent.futures import ThreadPoolExecutor # <-- 新增导入
+import subprocess
+import os
+import signal
 
 app = Flask(__name__) #
+
+PERF_LOG_DIR = '/home/jywang/FaaSDocker/storage/perf_logs'
 
 function_managers = {} #
 manager_lock = threading.Lock() #
@@ -52,71 +57,136 @@ def create_manager():
         function_managers[function_name] = manager #
         return jsonify({"status": "created", "function": function_name}), 201 #
 
-# --- 新增：可重用的内部 Dispatch 函数 ---
-def _dispatch_request(function_name, payload):
+# --- 替换旧的 _dispatch_request 函数 ---
+def _dispatch_request(function_name, payload, run_perf=True):
     """
-    内部共享逻辑：为函数获取、初始化、运行并释放一个容器。
+    内部共享逻辑：为函数获取、初始化、运行(带perf)并释放一个容器。
     返回: (result_payload, container_id)
     会抛出异常如果失败。
     """
     print(f"[_dispatch_request] 正在为 '{function_name}' 寻找 manager...")
     with manager_lock:
-        if function_name not in function_managers: #
+        if function_name not in function_managers:
             print(f"[_dispatch_request] 错误: 未知的函数 {function_name}")
             raise Exception(f"未知的函数: {function_name}")
-        manager = function_managers[function_name] #
+        manager = function_managers[function_name]
 
     print(f"[_dispatch_request] 正在为 '{function_name}' 获取容器...")
-    host_port, container_id = manager.get_container_for_request() #
-    if not host_port: #
+    host_port, container_id = manager.get_container_for_request()
+    if not host_port:
         print(f"[_dispatch_request] 错误: 无法获取容器 {function_name}")
         raise Exception(f"无法获取容器 {function_name}")
 
+    perf_process = None
+    output_file = ""
+    pid = None
+
     try:
-        # 1. 调用 /init (来自原始 /dispatch 的逻辑)
+        # --- 1. 运行 INIT (现在是第一步，没有 perf) ---
         try:
-            init_data = {"action": function_name} #
-            manager_url = f"http://127.0.0.1:{host_port}" #
+            init_data = {"action": function_name}
+            manager_url = f"http://127.0.0.1:{host_port}"
             print(f"[_dispatch_request] 正在为 {container_id[:12]} 调用 {manager_url}/init")
-            requests.post(f"{manager_url}/init", json=init_data, timeout=10) #
+            requests.post(f"{manager_url}/init", json=init_data, timeout=10)
         except Exception as e:
-            # 非致命错误，继续尝试 /run
+            # init 失败仍然是非致命的
             print(f"[_dispatch_request] init 错误 (非致命): {e}")
 
-        # 2. 调用 /run (来自原始 /dispatch 的逻辑)
+
+        # --- 2. 启动 PERF (新位置：在 init 之后, run 之前) ---
+        if run_perf:
+            try:
+                # 2a. 获取 PID
+                with manager.lock:
+                    container_obj = manager.containers[container_id]["container_obj"]
+                    container_obj.reload()
+                    pid = container_obj.attrs['State']['Pid']
+                
+                if pid:
+                    os.makedirs(PERF_LOG_DIR, exist_ok=True)
+                    output_file = os.path.join(PERF_LOG_DIR, f"{function_name}_{container_id[:12]}.txt")
+                    
+                    # 使用您验证过的事件列表
+                    events = (
+                        'cycles,instructions,cache-misses,cycle_activity.stalls_total,'
+                        'idq_uops_not_delivered.core,cpu-clock,mem_load_retired.l3_hit,'
+                        'mem_load_retired.l3_miss,cycle_activity.stalls_l3_miss,'
+                        'memory_activity.stalls_l2_miss,mem_load_retired.l1_miss,'
+                        'mem_load_retired.l2_miss,mem_inst_retired.stlb_miss_loads,'
+                        'mem_load_l3_miss_retired.local_dram,mem_load_l3_hit_retired.xsnp_fwd'
+                    )
+                    
+                    perf_cmd = [
+                        'sudo', 'perf', 'stat',
+                        '-p', str(pid),
+                        '-e', events,
+                        'sleep', '300' 
+                    ]
+                    
+                    print(f"[_dispatch_request] 启动 Perf: {' '.join(perf_cmd)}")
+                    perf_log_file = open(output_file, 'w')
+                    perf_process = subprocess.Popen(
+                        perf_cmd, 
+                        stdout=subprocess.PIPE, 
+                        stderr=perf_log_file, # 将 perf 报告直接写入文件
+                        preexec_fn=os.setsid 
+                    )
+                    
+            except Exception as e:
+                print(f"[_dispatch_request] 警告: 启动 perf 失败 (将继续执行): {e}")
+                if 'perf_log_file' in locals() and perf_log_file:
+                    perf_log_file.close()
+
+        # --- 3. 运行 RUN (现在 perf 正在运行) ---
         print(f"[_dispatch_request] 正在转发 run 到 http://127.0.0.1:{host_port}/run")
-        r = requests.post(f"http://127.0.0.1:{host_port}/run", json=payload, timeout=60) #
-        r.raise_for_status() # 抛出 4xx/5xx 错误
+        r = requests.post(f"http://127.0.0.1:{host_port}/run", json=payload, timeout=300)
+        r.raise_for_status()
         
         try:
-            data = r.json() #
+            data = r.json()
         except Exception:
-            data = {"raw": r.text} #
+            data = {"raw": r.text}
         
-        # 假设 proxy.py 总是返回一个包含 "result" 的字典
         return data.get("result"), container_id
     
     except Exception as e:
         print(f"[_dispatch_request] 调用容器 {container_id[:12]} 时出错: {e}")
+        # (日志抓取代码 保持不变)
         try:
             print(f"--- 正在抓取容器 {container_id[:12]} 的日志 ---")
-            # 我们有 manager 和 container_id，可以获取 container 对象
             with manager.lock:
                 if container_id in manager.containers:
-                    container_obj = manager.containers[container_id]["container_obj"]
-                    # 获取最后50行日志
-                    logs = container_obj.logs(tail=50).decode('utf-8', errors='ignore')
+                    logs = manager.containers[container_id]["container_obj"].logs(tail=50).decode('utf-8', errors='ignore')
                     print(logs)
             print(f"--- 容器日志结束 ---")
         except Exception as log_e:
             print(f"[_dispatch_request] 尝试获取日志时出错: {log_e}")
-        raise e # 重新抛出异常，让上层(工作流)知道失败了
+        
+        raise e
+        
     finally:
-        # 3. 释放容器 (来自原始 /dispatch 的 finally 块)
+        # --- 4. 停止 PERF (不变) ---
+        if run_perf and perf_process:
+            print(f"[_dispatch_request] 正在向 perf 进程组发送 SIGINT...")
+            try:
+                os.killpg(os.getpgid(perf_process.pid), signal.SIGINT)
+            except ProcessLookupError:
+                pass 
+            
+            try:
+                perf_process.communicate(timeout=5)
+                print(f"[_dispatch_request] Perf 已停止。指标 已保存到 {output_file}")
+            except subprocess.TimeoutExpired:
+                perf_process.kill()
+                print(f"[_dispatch_request] Perf 强制终止。")
+            
+            if 'perf_log_file' in locals() and perf_log_file:
+                perf_log_file.close()
+        
+        # --- 5. 释放容器 (不变) ---
         print(f"[_dispatch_request] 正在释放容器 {container_id[:12]}")
-        manager.release_container(container_id) #
-
-
+        manager.release_container(container_id)
+        
 # --- 重构：更新 /dispatch 接口 ---
 @app.route('/dispatch/<function_name>', methods=['POST']) #
 def dispatch(function_name):
@@ -165,7 +235,7 @@ def _run_video_workflow(payload):
         # --- 2. 调度 Split ---
         print("[video_workflow] 正在调度 SPLIT...")
         split_payload = {"video_name": video_name, "segment_time": segment_time}
-        split_result, _ = _dispatch_request("split", split_payload)
+        split_result, _ = _dispatch_request("video_split", split_payload)
         split_keys = split_result['split_keys']
         print(f"[video_workflow] SPLIT 完成。创建了 {len(split_keys)} 个分片。")
 
@@ -176,7 +246,7 @@ def _run_video_workflow(payload):
             # 这是在线程池中运行的函数
             print(f"[video_workflow]  > 开始转码: {split_file}")
             task_payload = {'split_file': split_file, 'target_type': target_type}
-            result, _ = _dispatch_request("transcode", task_payload)
+            result, _ = _dispatch_request("video_transcode", task_payload)
             print(f"[video_workflow]  > 完成转码: {split_file}")
             return result['transcoded_file']
 
@@ -194,7 +264,7 @@ def _run_video_workflow(payload):
             'output_prefix': output_prefix,
             'video_name': video_name
         }
-        merge_result, _ = _dispatch_request("merge", merge_payload)
+        merge_result, _ = _dispatch_request("video_merge", merge_payload)
         final_video = merge_result['final_video']
         print("[video_workflow] MERGE 完成。")
 

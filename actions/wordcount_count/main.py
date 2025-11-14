@@ -27,7 +27,7 @@ def main(event):
         dic[word] += 1
             
     # 3. 确保输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'wordcount_output')
+    output_dir = os.path.join(STORAGE_DIR, 'output','wordcount_count')
     os.makedirs(output_dir, exist_ok=True)
     
     # 4. 将部分结果 (dict) 保存为 JSON 文件

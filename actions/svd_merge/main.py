@@ -33,7 +33,7 @@ def main(event):
     U_final = np.dot(U, u_final)
     
     # 4. 确保最终输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'svd_final')
+    output_dir = os.path.join(STORAGE_DIR, 'output', 'svd_merge')
     os.makedirs(output_dir, exist_ok=True)
     
     # 5. 将最终结果保存到 /storage

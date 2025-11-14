@@ -2,6 +2,8 @@ import json
 import os
 from collections import defaultdict
 
+STORAGE_DIR = '/storage'
+
 def main(event):
     # 从 controller 接收所有 count 任务的结果路径
     # event['result_paths'] 应该是一个列表:
@@ -30,6 +32,18 @@ def main(event):
             final_dic[key] += value #
 
     print(f"WORDCOUNT_MERGE: Merge complete. Total unique words: {len(final_dic)}")
+
+    try:
+        output_dir = os.path.join(STORAGE_DIR, 'output', 'wordcount_merge')
+        os.makedirs(output_dir, exist_ok=True)
+        final_filepath = os.path.join(output_dir, 'final_count.json')
+
+        with open(final_filepath, 'w') as f:
+            json.dump(final_dic, f, indent=2)
+
+        print(f"WORDCOUNT_MERGE: Final result saved to {final_filepath}")
+    except Exception as e:
+        print(f"WORDCOUNT_MERGE: Error saving final result file: {e}")
 
     # 3. 直接返回最终的字典
     return {

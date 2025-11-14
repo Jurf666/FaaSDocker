@@ -33,3 +33,8 @@ the meaning of each field:
 
 ### run
 must send a json object. it will be used as the input of the action.
+
+操作步骤：
+①sudo docker build -t workflow-proxy:latest .
+②在终端1中：sudo venv/bin/python3 controller.py  perf需要sudo权限
+②在终端2中：python3 trigger_workflow.py <workflow_name>

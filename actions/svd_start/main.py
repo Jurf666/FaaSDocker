@@ -12,7 +12,7 @@ def main(event):
     slice_num = int(event.get('slice_num', 2)) #
     
     # 确保输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'svd_input')
+    output_dir = os.path.join(STORAGE_DIR, 'output', 'svd_start')
     os.makedirs(output_dir, exist_ok=True)
     
     print(f"SVD_START: Generating matrix ({row_num}, {col_num}) and splitting into {slice_num} slices.")
