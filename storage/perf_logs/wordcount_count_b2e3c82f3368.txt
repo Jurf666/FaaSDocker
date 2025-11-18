@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '51460':
+
+        12,773,766      cycles                           #    2.083 GHz                       
+        37,880,941      instructions                     #    2.97  insn per cycle            
+              6.13 msec task-clock                       #    0.012 CPUs utilized             
+                 2      context-switches                 #  326.084 /sec                      
+            20,318      cache-misses                                                          
+            72,447      L1-dcache-load-misses                                                 
+             7,862      LLC-load-misses                                                       
+               156      page-faults                      #   25.435 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+               156      minor-faults                     #   25.435 K/sec                     
+
+       0.496092714 seconds time elapsed
+

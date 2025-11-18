@@ -57,7 +57,11 @@ RUN pip install --no-cache-dir \
     Pillow \
     scipy \
     # 您原始 Action 中的遗留依赖
-    couchdb
+    couchdb\
+    markdown \
+    scikit-learn \
+    requests
+    
 
 # ----------------------------------------------------------------------
 # 5. 启动命令

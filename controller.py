@@ -108,12 +108,9 @@ def _dispatch_request(function_name, payload, run_perf=True):
                     
                     # 使用您验证过的事件列表
                     events = (
-                        'cycles,instructions,cache-misses,cycle_activity.stalls_total,'
-                        'idq_uops_not_delivered.core,cpu-clock,mem_load_retired.l3_hit,'
-                        'mem_load_retired.l3_miss,cycle_activity.stalls_l3_miss,'
-                        'memory_activity.stalls_l2_miss,mem_load_retired.l1_miss,'
-                        'mem_load_retired.l2_miss,mem_inst_retired.stlb_miss_loads,'
-                        'mem_load_l3_miss_retired.local_dram,mem_load_l3_hit_retired.xsnp_fwd'
+                        'cycles,instructions,task-clock,context-switches,'
+                        'cache-misses,L1-dcache-load-misses,LLC-load-misses,'
+                        'page-faults,major-faults,minor-faults'
                     )
                     
                     perf_cmd = [
@@ -131,6 +128,9 @@ def _dispatch_request(function_name, payload, run_perf=True):
                         stderr=perf_log_file, # 将 perf 报告直接写入文件
                         preexec_fn=os.setsid 
                     )
+                    # 强制等待 0.5 秒，确保 perf 已经完全启动并 Attach 到进程上
+                    # 否则对于极短的任务，perf 还没开始采集就被 kill 了
+                    time.sleep(0.5)
                     
             except Exception as e:
                 print(f"[_dispatch_request] 警告: 启动 perf 失败 (将继续执行): {e}")

@@ -7,7 +7,7 @@ proxy.debug = False
 @proxy.route('/upload', methods=['POST'])
 def upload():
     file = request.files['file']
-    file.save('upload/' + file.filename)
+    file.save('/home/jywang/FaaSDocker/actions/network/upload/' + file.filename)
     return ('OK', 200)
 
 if __name__ == '__main__':

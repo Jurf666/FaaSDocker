@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '76131':
+
+       106,278,939      cycles                           #    2.498 GHz                       
+       166,368,100      instructions                     #    1.57  insn per cycle            
+             42.55 msec task-clock                       #    0.046 CPUs utilized             
+               205      context-switches                 #    4.818 K/sec                     
+           448,807      cache-misses                                                          
+         3,077,557      L1-dcache-load-misses                                                 
+            48,804      LLC-load-misses                                                       
+                 8      page-faults                      #  188.021 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 8      minor-faults                     #  188.021 /sec                      
+
+       0.918489917 seconds time elapsed
+

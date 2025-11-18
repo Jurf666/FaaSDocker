@@ -65,7 +65,8 @@ class FunctionManager:
             run_kwargs = {
                 "detach": True,
                 "ports": {f"{self.container_port}/tcp": None}, #
-                "name": container_name
+                "name": container_name,
+                "nano_cpus": 200000000
             }
 
             # --- 仅在 host_storage_path 存在时才添加 volumes ---
