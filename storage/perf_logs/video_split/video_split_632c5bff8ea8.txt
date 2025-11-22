@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '92530':
+
+       812,917,367      cycles                           #    2.511 GHz                       
+     1,076,727,943      instructions                     #    1.32  insn per cycle            
+            323.75 msec task-clock                       #    0.192 CPUs utilized             
+             5,877      context-switches                 #   18.153 K/sec                     
+         3,336,235      cache-misses                                                          
+        36,699,670      L1-dcache-load-misses                                                 
+         1,030,860      LLC-load-misses                                                       
+            11,835      page-faults                      #   36.556 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+            11,835      minor-faults                     #   36.556 K/sec                     
+
+       1.682300488 seconds time elapsed
+

@@ -20,7 +20,8 @@ ACTION_DEFAULTS = {
     "markdown2html":   {},
     "map_reduce":      {},
     "disk":            {"bs": 1024, "count": 50000},
-    "couchdb_test":    {}
+    "couchdb_test":    {},
+    "noop": {}  # 默认参数为空
 }
 
 def setup_manager(action_name):

@@ -1,0 +1,44 @@
+{
+  "function": "video_transcode",
+  "timestamp": 1763718073.0626645,
+  "raw_metrics": {
+    "cycles": 6417046062.0,
+    "instructions": 17440890779.0,
+    "task-clock": 2986.08,
+    "context-switches": 9929.0,
+    "cache-misses": 11158278.0,
+    "L1-dcache-load-misses": 57991569.0,
+    "LLC-load-misses": 1775805.0,
+    "page-faults": 9480.0,
+    "major-faults": 0.0,
+    "minor-faults": 9480.0,
+    "seconds": 15.184918268
+  },
+  "noise_baseline": {
+    "cycles": 1553764.0,
+    "instructions": 1690168.0,
+    "task-clock": 1.98,
+    "context-switches": 1.0,
+    "cache-misses": 5104.0,
+    "L1-dcache-load-misses": 29556.0,
+    "LLC-load-misses": 2809.0,
+    "page-faults": 1.0,
+    "major-faults": 0.0,
+    "minor-faults": 1.0,
+    "seconds": 0.092538643
+  },
+  "clean_metrics": {
+    "cycles": 6415492298.0,
+    "instructions": 17439200611.0,
+    "task-clock": 2984.1,
+    "context-switches": 9928.0,
+    "cache-misses": 11153174.0,
+    "L1-dcache-load-misses": 57962013.0,
+    "LLC-load-misses": 1772996.0,
+    "page-faults": 9479.0,
+    "IPC": 2.7182949960732694
+  },
+  "result_payload": {
+    "transcoded_file": "/storage/output/video_transcode/transcoded_split_my_video_piece_00.avi"
+  }
+}

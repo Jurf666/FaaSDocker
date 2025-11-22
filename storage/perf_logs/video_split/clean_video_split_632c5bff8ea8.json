@@ -1,0 +1,49 @@
+{
+  "function": "video_split",
+  "timestamp": 1763718055.657535,
+  "raw_metrics": {
+    "cycles": 812917367.0,
+    "instructions": 1076727943.0,
+    "task-clock": 323.75,
+    "context-switches": 5877.0,
+    "cache-misses": 3336235.0,
+    "L1-dcache-load-misses": 36699670.0,
+    "LLC-load-misses": 1030860.0,
+    "page-faults": 11835.0,
+    "major-faults": 0.0,
+    "minor-faults": 11835.0,
+    "seconds": 1.682300488
+  },
+  "noise_baseline": {
+    "cycles": 1533222.0,
+    "instructions": 1691834.0,
+    "task-clock": 1.95,
+    "context-switches": 1.0,
+    "cache-misses": 5893.0,
+    "L1-dcache-load-misses": 29650.0,
+    "LLC-load-misses": 2478.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "seconds": 0.081085675
+  },
+  "clean_metrics": {
+    "cycles": 811384145.0,
+    "instructions": 1075036109.0,
+    "task-clock": 321.8,
+    "context-switches": 5876.0,
+    "cache-misses": 3330342.0,
+    "L1-dcache-load-misses": 36670020.0,
+    "LLC-load-misses": 1028382.0,
+    "page-faults": 11835.0,
+    "IPC": 1.3249409858754388
+  },
+  "result_payload": {
+    "split_keys": [
+      "/storage/output/video_split/split_my_video_piece_01.mp4",
+      "/storage/output/video_split/split_my_video_piece_03.mp4",
+      "/storage/output/video_split/split_my_video_piece_02.mp4",
+      "/storage/output/video_split/split_my_video_piece_00.mp4"
+    ]
+  }
+}

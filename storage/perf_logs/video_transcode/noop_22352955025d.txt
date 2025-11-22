@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '89277':
+
+         1,972,071      cycles                           #    0.875 GHz                       
+         1,704,144      instructions                     #    0.86  insn per cycle            
+              2.25 msec task-clock                       #    0.027 CPUs utilized             
+                 1      context-switches                 #  443.882 /sec                      
+            22,338      cache-misses                                                          
+            31,665      L1-dcache-load-misses                                                 
+             8,351      LLC-load-misses                                                       
+                 0      page-faults                      #    0.000 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 0      minor-faults                     #    0.000 /sec                      
+
+       0.082831224 seconds time elapsed
+

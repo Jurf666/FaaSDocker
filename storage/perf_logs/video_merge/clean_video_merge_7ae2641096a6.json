@@ -1,0 +1,44 @@
+{
+  "function": "video_merge",
+  "timestamp": 1763718076.467955,
+  "raw_metrics": {
+    "cycles": 408304353.0,
+    "instructions": 694375210.0,
+    "task-clock": 166.86,
+    "context-switches": 4180.0,
+    "cache-misses": 599500.0,
+    "L1-dcache-load-misses": 18577461.0,
+    "LLC-load-misses": 153127.0,
+    "page-faults": 4570.0,
+    "major-faults": 0.0,
+    "minor-faults": 4570.0,
+    "seconds": 0.799117676
+  },
+  "noise_baseline": {
+    "cycles": 1531918.0,
+    "instructions": 1699567.0,
+    "task-clock": 1.95,
+    "context-switches": 1.0,
+    "cache-misses": 7966.0,
+    "L1-dcache-load-misses": 29613.0,
+    "LLC-load-misses": 3799.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "seconds": 0.091521476
+  },
+  "clean_metrics": {
+    "cycles": 406772435.0,
+    "instructions": 692675643.0,
+    "task-clock": 164.91000000000003,
+    "context-switches": 4179.0,
+    "cache-misses": 591534.0,
+    "L1-dcache-load-misses": 18547848.0,
+    "LLC-load-misses": 149328.0,
+    "page-faults": 4570.0,
+    "IPC": 1.7028578718712835
+  },
+  "result_payload": {
+    "final_video": "/storage/output/video_merge/final_video_my_video.avi"
+  }
+}
