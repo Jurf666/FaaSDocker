@@ -1,0 +1,43 @@
+{
+  "function": "recognizer_extract",
+  "run_id": "1764079015771691145",
+  "timestamp": 1764079029.7664669,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 5179171366.0,
+    "instructions": 3218219904.0,
+    "task-clock": 2509.08,
+    "context-switches": 923.0,
+    "cache-misses": 2378160.0,
+    "L1-dcache-load-misses": 15924280.0,
+    "LLC-load-misses": 632469.0,
+    "page-faults": 19904.0,
+    "major-faults": 0.0,
+    "minor-faults": 19904.0,
+    "seconds": 12.76288686
+  },
+  "noise_baseline": {
+    "cycles": 1584706.0,
+    "instructions": 1647191.0,
+    "task-clock": 2.02,
+    "context-switches": 1.0,
+    "cache-misses": 7906.0,
+    "L1-dcache-load-misses": 30589.0,
+    "LLC-load-misses": 3902.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "seconds": 0.089589994
+  },
+  "clean_metrics": {
+    "cycles": 5177586660.0,
+    "instructions": 3216572713.0,
+    "task-clock": 2507.06,
+    "context-switches": 922.0,
+    "cache-misses": 2370254.0,
+    "L1-dcache-load-misses": 15893691.0,
+    "LLC-load-misses": 628567.0,
+    "page-faults": 19904.0,
+    "IPC": 0.6212494206712129
+  }
+}

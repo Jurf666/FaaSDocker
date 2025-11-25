@@ -1,18 +1,16 @@
 import os
-import json
 
-STORAGE_DIR = '/storage'
+# --- 主逻辑 ---
 
-def main(event):
-    image_filename = event.get('image_filename') # e.g., "test.png"
-    if not image_filename:
-        raise Exception("image_filename is required")
+# 模拟上传，读取本地（镜像内）的测试图片
+# 如果未来改为从 HTTP 请求体获取，可以修改 controller ingest 逻辑
+image_path = '/proxy/test.png'
+
+if os.path.exists(image_path):
+    with open(image_path, 'rb') as f:
+        img_data = f.read()
     
-    # 假设源文件已被 trigger_workflow.py 复制到 /storage/source/
-    image_path = os.path.join(STORAGE_DIR, 'sources', image_filename)
-    
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"File not found at {image_path}")
-
-    # 返回 Action 可以使用的 *容器内共享路径*
-    return {"image_path": image_path}
+    # 将图片存入数据库，供下游（extract/adult/violence）并行使用
+    store.post('img', img_data, datatype='octet')
+else:
+    print(f"Error: Source image {image_path} not found.")

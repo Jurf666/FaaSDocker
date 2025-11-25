@@ -1,0 +1,43 @@
+{
+  "function": "wordcount_count",
+  "run_id": "1764078895804728595",
+  "timestamp": 1764078897.5693462,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 384948752.0,
+    "instructions": 822492850.0,
+    "task-clock": 131.84,
+    "context-switches": 49.0,
+    "cache-misses": 653008.0,
+    "L1-dcache-load-misses": 5521881.0,
+    "LLC-load-misses": 190850.0,
+    "page-faults": 3878.0,
+    "major-faults": 0.0,
+    "minor-faults": 3878.0,
+    "seconds": 0.672715009
+  },
+  "noise_baseline": {
+    "cycles": 1459505.0,
+    "instructions": 1644137.0,
+    "task-clock": 1.86,
+    "context-switches": 1.0,
+    "cache-misses": 6692.0,
+    "L1-dcache-load-misses": 29616.0,
+    "LLC-load-misses": 2741.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "seconds": 0.089606328
+  },
+  "clean_metrics": {
+    "cycles": 383489247.0,
+    "instructions": 820848713.0,
+    "task-clock": 129.98,
+    "context-switches": 48.0,
+    "cache-misses": 646316.0,
+    "L1-dcache-load-misses": 5492265.0,
+    "LLC-load-misses": 188109.0,
+    "page-faults": 3878.0,
+    "IPC": 2.1404738709661917
+  }
+}

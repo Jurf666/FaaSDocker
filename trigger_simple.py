@@ -12,7 +12,7 @@ PROXY_CONTAINER_PORT = 5000
 # 用于定义如果不传参时的默认行为
 ACTION_DEFAULTS = {
     "float_operation": {"param": 1000000},
-    "matmul":          {"param": 5000},
+    "matmul":          {"param": 1000},
     "linpack":         {"param": 5000},
     "k-means":         {"param": 1},       # 占位参数
     "image":           {},                 # 代码内定读取 test_image.png
@@ -63,7 +63,7 @@ def trigger_action(action_name, payload):
         resp.raise_for_status()
         
         data = resp.json()
-        result = data.get('result', {})
+        result = data.get('output', {})
         container_id = data.get('container', 'unknown')
         
         print(f"\n[+] --- 执行成功 (Container: {container_id}) ---")

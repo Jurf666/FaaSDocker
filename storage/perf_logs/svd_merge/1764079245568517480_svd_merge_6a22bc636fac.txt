@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '420495':
+
+       628,164,476      cycles                           #    2.128 GHz                       
+       970,710,375      instructions                     #    1.55  insn per cycle            
+            295.19 msec task-clock                       #    0.186 CPUs utilized             
+               241      context-switches                 #  816.418 /sec                      
+           874,634      cache-misses                                                          
+         7,484,784      L1-dcache-load-misses                                                 
+           244,827      LLC-load-misses                                                       
+             4,444      page-faults                      #   15.055 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+             4,444      minor-faults                     #   15.055 K/sec                     
+
+       1.586457554 seconds time elapsed
+

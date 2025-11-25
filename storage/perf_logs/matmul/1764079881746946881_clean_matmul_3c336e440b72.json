@@ -1,0 +1,43 @@
+{
+  "function": "matmul",
+  "run_id": "1764079881746946881",
+  "timestamp": 1764079948.9435308,
+  "is_workflow": false,
+  "raw_metrics": {
+    "cycles": 11806322187.0,
+    "instructions": 39492466174.0,
+    "task-clock": 13415.23,
+    "context-switches": 13513.0,
+    "cache-misses": 73442486.0,
+    "L1-dcache-load-misses": 630150615.0,
+    "LLC-load-misses": 4063701.0,
+    "page-faults": 12772.0,
+    "major-faults": 0.0,
+    "minor-faults": 12772.0,
+    "seconds": 65.979247442
+  },
+  "noise_baseline": {
+    "cycles": 1803209.0,
+    "instructions": 1644064.0,
+    "task-clock": 2.29,
+    "context-switches": 1.0,
+    "cache-misses": 12390.0,
+    "L1-dcache-load-misses": 31334.0,
+    "LLC-load-misses": 6029.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "seconds": 0.067553617
+  },
+  "clean_metrics": {
+    "cycles": 11804518978.0,
+    "instructions": 39490822110.0,
+    "task-clock": 13412.939999999999,
+    "context-switches": 13512.0,
+    "cache-misses": 73430096.0,
+    "L1-dcache-load-misses": 630119281.0,
+    "LLC-load-misses": 4057672.0,
+    "page-faults": 12772.0,
+    "IPC": 3.3453986717797455
+  }
+}

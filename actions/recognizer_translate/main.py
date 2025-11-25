@@ -1,20 +1,15 @@
 from googletrans import Translator
-import os, json
 import time
 
-translator = Translator() #
+translator = Translator()
 
-def main(event):
-    extracted_text = event.get('text', '') #
-    
-    if not extracted_text.strip():
-        return {"translated_text": ""}
+# --- 主逻辑 ---
 
-    try:
-        # 注意：googletrans 库可能需要访问外网
-        translated_text = translator.translate(extracted_text, dest='en').text #
-    except Exception as e:
-        print(f"Translate Error: {e}. Defaulting to original text.")
-        translated_text = extracted_text #
+extracted_text = store.fetch(['text'])['text']
 
-    return {"translated_text": translated_text}
+# 由于网络问题，这里保留原来的 Mock 逻辑
+# translated_text = translator.translate(extracted_text, dest='en').text 
+translated_text = extracted_text
+
+time.sleep(0.1)
+store.post('translated_text', translated_text)

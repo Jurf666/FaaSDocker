@@ -1,0 +1,43 @@
+{
+  "function": "recognizer_violence",
+  "run_id": "1764079705361168336",
+  "timestamp": 1764079748.5644007,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 16391239610.0,
+    "instructions": 24826632388.0,
+    "task-clock": 8365.62,
+    "context-switches": 24081.0,
+    "cache-misses": 33494293.0,
+    "L1-dcache-load-misses": 263373070.0,
+    "LLC-load-misses": 8916770.0,
+    "page-faults": 194831.0,
+    "major-faults": 0.0,
+    "minor-faults": 194831.0,
+    "seconds": 41.082392535
+  },
+  "noise_baseline": {
+    "cycles": 1364174.0,
+    "instructions": 1647350.0,
+    "task-clock": 1.74,
+    "context-switches": 1.0,
+    "cache-misses": 1937.0,
+    "L1-dcache-load-misses": 28669.0,
+    "LLC-load-misses": 843.0,
+    "page-faults": 1.0,
+    "major-faults": 0.0,
+    "minor-faults": 1.0,
+    "seconds": 0.065874721
+  },
+  "clean_metrics": {
+    "cycles": 16389875436.0,
+    "instructions": 24824985038.0,
+    "task-clock": 8363.880000000001,
+    "context-switches": 24080.0,
+    "cache-misses": 33492356.0,
+    "L1-dcache-load-misses": 263344401.0,
+    "LLC-load-misses": 8915927.0,
+    "page-faults": 194830.0,
+    "IPC": 1.514653673539975
+  }
+}

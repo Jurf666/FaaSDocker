@@ -1,0 +1,17 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '413700':
+
+         1,597,542      cycles                           #    0.894 GHz                       
+         1,644,730      instructions                     #    1.03  insn per cycle            
+              1.79 msec task-clock                       #    0.020 CPUs utilized             
+                 1      context-switches                 #  559.614 /sec                      
+             8,030      cache-misses                                                          
+            29,711      L1-dcache-load-misses                                                 
+             3,927      LLC-load-misses                                                       
+                 1      page-faults                      #  559.614 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 1      minor-faults                     #  559.614 /sec                      
+
+       0.088248408 seconds time elapsed
+

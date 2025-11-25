@@ -1,47 +1,44 @@
-import json
-import os
 import re
-from collections import defaultdict
+import sys
 
-STORAGE_DIR = '/storage'
+# --- 主逻辑 ---
 
-def main(event):
-    # 从 controller 接收*一个*切片路径
-    chunk_path = event.get('chunk_path')
-    
-    if not chunk_path or not os.path.exists(chunk_path):
-        raise FileNotFoundError(f"WORDCOUNT_COUNT: Chunk file not found at {chunk_path}")
+print("[Count] Starting action...", flush=True)
 
-    print(f"WORDCOUNT_COUNT: Processing chunk {chunk_path}")
+try:
+    # 1. 获取数据
+    data_map = store.fetch(['file'])
+    content = data_map.get('file')
+
+    # 2. 类型检查与解码 (修复 Bug 的关键步骤)
+    if content is None:
+        raise ValueError("Input content is None")
     
-    # 1. 从 /storage 加载文本块
-    with open(chunk_path, 'r', encoding='utf-8') as f:
-        content = f.read()
+    # 如果是 bytes 类型，解码成字符串
+    if isinstance(content, bytes):
+        print(f"[Count] Decoding {len(content)} bytes to string...", flush=True)
+        content = content.decode('utf-8', errors='ignore') # 使用 ignore 忽略可能的编码错误
     
-    # 2. 执行单词计数逻辑
-    # (使用 main(count).py 中的逻辑)
-    dic = defaultdict(int)
-    words = re.findall(r'[a-zA-Z0-9]+', content.lower())
+    # 3. 执行统计
+    res = {}
+    # 此时 content 已经是 str 类型，可以安全使用 r'\W+' (str pattern)
+    words = re.split(r'\W+', content)
     
-    for word in words:
-        dic[word] += 1
+    for w in words:
+        if not w: continue
+        w = w.lower()
+        if w not in res:
+            res[w] = 1
+        else:
+            res[w] += 1
             
-    # 3. 确保输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'output','wordcount_count')
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 4. 将部分结果 (dict) 保存为 JSON 文件
-    # (从输入路径派生一个唯一的文件名)
-    base_name = os.path.basename(chunk_path) # e.g., "chunk_0.txt"
-    result_filename = f"count_{os.path.splitext(base_name)[0]}.json" # e.g., "count_chunk_0.json"
-    result_filepath = os.path.join(output_dir, result_filename)
-    
-    with open(result_filepath, 'w') as f:
-        json.dump(dic, f)
+    print(f"[Count] Processed {len(words)} words. Unique: {len(res)}", flush=True)
 
-    print(f"WORDCOUNT_COUNT: Finished chunk {chunk_path}. Result saved to {result_filepath}")
+    # 4. 上传结果
+    store.post('res', res)
 
-    # 5. 返回指向*结果路径*的 JSON
-    return {
-        "result_path": result_filepath
-    }
+except Exception as e:
+    print(f"[Count] Error: {e}", flush=True)
+    import traceback
+    traceback.print_exc()
+    raise e

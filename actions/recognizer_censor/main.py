@@ -1,10 +1,11 @@
-import os, json, re
+# -*- coding:utf-8 -*-
+import os
 
-# (DFAFilter 类的代码 保持不变，粘贴在此处)
 class DFAFilter():
     def __init__(self):
         self.keyword_chains = {}
         self.delimit = '\x00'
+
     def add(self, keyword):
         if not isinstance(keyword, str):
             keyword = keyword.decode('utf-8')
@@ -27,16 +28,12 @@ class DFAFilter():
                 break
         if i == len(chars) - 1:
             level[self.delimit] = 0
+
     def parse(self, path):
-        # 假设关键字文件在 /proxy/actions/recognizer_censor/spooky_keywords
-        full_path = os.path.join(os.path.dirname(__file__), path)
-        try:
-            with open(full_path) as f:
-                for keyword in f:
-                    self.add(keyword.strip())
-        except FileNotFoundError:
-            print(f"Warning: Keyword file '{full_path}' not found. Censor will not filter anything.")
-            self.add("example_bad_word") # 添加一个默认词
+        with open(path) as f:
+            for keyword in f:
+                self.add(keyword.strip())
+
     def filter(self, message, repl="*"):
         if not isinstance(message, str):
             message = message.decode('utf-8')
@@ -65,19 +62,26 @@ class DFAFilter():
             start += 1
         return ''.join(ret), replaced
 
-# --- DFAFilter 类结束 ---
+# --- 主逻辑 ---
 
-# 假设关键字文件与 main.py 放在一起
+# 假设 keyword 文件在 /proxy/actions/... 
+# 或者你需要在 Dockerfile 里把 spooky_keywords 复制到固定位置
+# 这里假设它和 main.py 在一起，proxy.py 的 cwd 是 /proxy/exec
+# 为了安全，建议把 spooky_keywords 放在 /proxy 根目录
 gfw = DFAFilter()
-gfw.parse("spooky_keywords") #
+keyword_path = '/proxy/exec/actions/recognizer_censor/spooky_keywords'
+if os.path.exists(keyword_path):
+    gfw.parse(keyword_path)
+else:
+    # Fallback or create empty
+    print("Warning: spooky_keywords file not found.")
 
-def main(event):
-    text_content = event.get('text', '') #
-    
-    word_filter, filter_count = gfw.filter(text_content, "*") #
-    
-    illegal = False
-    if filter_count >= 1: #
-        illegal = True
-    
-    return {"illegal": illegal, "filter_count": filter_count} #
+text_content = store.fetch(['text'])['text']
+
+word_filter, filter_count = gfw.filter(text_content, "*")
+
+illegal = False
+if filter_count >= 1:
+    illegal = True
+
+store.post('illegal', illegal)

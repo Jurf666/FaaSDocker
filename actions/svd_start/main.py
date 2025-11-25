@@ -1,41 +1,22 @@
 import numpy as np
-import scipy.linalg
-import json
-import os
 
-STORAGE_DIR = '/storage'
+# --- 主逻辑 ---
 
-def main(event):
-    # 从 controller 接收参数
-    row_num = int(event.get('row_num', 1000))
-    col_num = int(event.get('col_num', 100))
-    slice_num = int(event.get('slice_num', 2)) #
-    
-    # 确保输出目录存在
-    output_dir = os.path.join(STORAGE_DIR, 'output', 'svd_start')
-    os.makedirs(output_dir, exist_ok=True)
-    
-    print(f"SVD_START: Generating matrix ({row_num}, {col_num}) and splitting into {slice_num} slices.")
-    
-    # 1. 生成大矩阵
-    mat = np.random.rand(row_num, col_num)
-    
-    # 2. 切片
-    mat_list = np.array_split(mat, slice_num) #
-    slice_paths = []
-    
-    # 3. 将切片保存到 /storage
-    for i, mat_slice in enumerate(mat_list):
-        slice_filename = f'slice_{i}.npy'
-        slice_filepath = os.path.join(output_dir, slice_filename)
-        
-        # 使用 numpy.save 保存
-        np.save(slice_filepath, mat_slice)
-        slice_paths.append(slice_filepath)
-        print(f"SVD_START: Saved {slice_filepath}")
+# 假设这里是生成大矩阵并切分
+# 为了演示，我们生成一个随机矩阵切分
+# 实际业务可以是读取文件
 
-    # 4. 返回包含所有切片*路径*的列表
-    return {
-        "slice_paths": slice_paths,
-        "slice_num": slice_num
-    }
+ROW = 2000
+COL = 100
+SPLIT = 2 # 切分成几份
+
+# 生成
+data = np.random.rand(ROW, COL)
+
+# 切分
+splits = np.array_split(data, SPLIT, axis=0)
+
+for chunk in splits:
+    # 序列化并发送
+    # Store 会自动生成 Key: req_matrix_0, req_matrix_1
+    store.post('matrix', chunk.dumps(), datatype='octet')

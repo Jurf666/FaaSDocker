@@ -1,0 +1,43 @@
+{
+  "function": "video_transcode",
+  "run_id": "1764078967017759140",
+  "timestamp": 1764078986.5447803,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 6749529365.0,
+    "instructions": 17216620868.0,
+    "task-clock": 3402.15,
+    "context-switches": 9253.0,
+    "cache-misses": 11861174.0,
+    "L1-dcache-load-misses": 64279472.0,
+    "LLC-load-misses": 2463280.0,
+    "page-faults": 19454.0,
+    "major-faults": 0.0,
+    "minor-faults": 19454.0,
+    "seconds": 17.403324264
+  },
+  "noise_baseline": {
+    "cycles": 1568200.0,
+    "instructions": 1694086.0,
+    "task-clock": 2.01,
+    "context-switches": 2.0,
+    "cache-misses": 6590.0,
+    "L1-dcache-load-misses": 31648.0,
+    "LLC-load-misses": 3727.0,
+    "page-faults": 1.0,
+    "major-faults": 0.0,
+    "minor-faults": 1.0,
+    "seconds": 0.080875811
+  },
+  "clean_metrics": {
+    "cycles": 6747961165.0,
+    "instructions": 17214926782.0,
+    "task-clock": 3400.14,
+    "context-switches": 9251.0,
+    "cache-misses": 11854584.0,
+    "L1-dcache-load-misses": 64247824.0,
+    "LLC-load-misses": 2459553.0,
+    "page-faults": 19453.0,
+    "IPC": 2.5511300911584307
+  }
+}

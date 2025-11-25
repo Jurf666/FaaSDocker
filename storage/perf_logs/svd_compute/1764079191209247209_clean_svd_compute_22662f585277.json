@@ -1,0 +1,43 @@
+{
+  "function": "svd_compute",
+  "run_id": "1764079191209247209",
+  "timestamp": 1764079245.5673668,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 9416297349.0,
+    "instructions": 7205732000.0,
+    "task-clock": 10876.1,
+    "context-switches": 13665.0,
+    "cache-misses": 3574113.0,
+    "L1-dcache-load-misses": 34160600.0,
+    "LLC-load-misses": 1173557.0,
+    "page-faults": 8205.0,
+    "major-faults": 0.0,
+    "minor-faults": 8205.0,
+    "seconds": 53.264485164
+  },
+  "noise_baseline": {
+    "cycles": 1597542.0,
+    "instructions": 1644730.0,
+    "task-clock": 1.79,
+    "context-switches": 1.0,
+    "cache-misses": 8030.0,
+    "L1-dcache-load-misses": 29711.0,
+    "LLC-load-misses": 3927.0,
+    "page-faults": 1.0,
+    "major-faults": 0.0,
+    "minor-faults": 1.0,
+    "seconds": 0.088248408
+  },
+  "clean_metrics": {
+    "cycles": 9414699807.0,
+    "instructions": 7204087270.0,
+    "task-clock": 10874.31,
+    "context-switches": 13664.0,
+    "cache-misses": 3566083.0,
+    "L1-dcache-load-misses": 34130889.0,
+    "LLC-load-misses": 1169630.0,
+    "page-faults": 8204.0,
+    "IPC": 0.7651956427377143
+  }
+}

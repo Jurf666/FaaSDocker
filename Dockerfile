@@ -30,8 +30,16 @@ RUN mkdir /proxy && \
     mkdir /proxy/exec
 
 COPY proxy.py /proxy/
+COPY store.py /proxy/
 COPY actions /proxy/exec/actions
 COPY models/ /proxy/
+
+# 复制源文件供 Upload/Start Action 读取
+COPY sources/my_video.mp4 /proxy/
+COPY sources/test.png /proxy/
+
+# 为 WordCount 准备文本目录
+COPY sources/book.txt /text/book.txt
 
 # (可选) 复制您的模型文件，如果它们在本地的话
 # COPY models/ /proxy/models/
@@ -45,10 +53,10 @@ EXPOSE 5000
 # 复制 requirements.txt (推荐) 或直接安装 (如下)
 # 我们只安装 proxy 和 actions 明确需要的包
 RUN pip install --no-cache-dir \
-    # Proxy.py 需要
     gevent \
     flask \
-    # Recognizer Actions 需要
+    redis \
+    couchdb \
     googletrans==4.0.0-rc1 \
     tensorflow-cpu \
     opencv-python-headless \
@@ -56,8 +64,6 @@ RUN pip install --no-cache-dir \
     numpy \
     Pillow \
     scipy \
-    # 您原始 Action 中的遗留依赖
-    couchdb\
     markdown \
     scikit-learn \
     requests
