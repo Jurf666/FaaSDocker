@@ -11,17 +11,17 @@ PROXY_CONTAINER_PORT = 5000
 # --- Action 默认参数配置 ---
 # 用于定义如果不传参时的默认行为
 ACTION_DEFAULTS = {
-    "float_operation": {"param": 1000000},
-    "matmul":          {"param": 1000},
-    "linpack":         {"param": 5000},
-    "k-means":         {"param": 1},       # 占位参数
-    "image":           {},                 # 代码内定读取 test_image.png
-    "network":         {"name": "5mb"},
-    "markdown2html":   {},
-    "map_reduce":      {},
-    "disk":            {"bs": 1024, "count": 50000},
+    "float_operation": {"param": 50000000},#可调整
+    "matmul":          {"param": 3000},#可调整
+    "linpack":         {"param": 4000},#可调整
+    "k-means":         {},
+    "image":           {},# 代码内定读取文件夹下的test_image.png，可更换图片文件
+    "network":         {"name": "10mb"},#上传文件夹下的指定文件到服务器，可调整
+    "markdown2html":   {},# 代码内定读取文件夹下的example.md，理论可调整但是不好调整
+    "map_reduce":      {},#代码内定读取文件夹下的data.txt，理论可调整但是不好调整
+    "disk":            {"bs": "1M", "count": 1000},#可调整
     "couchdb_test":    {},
-    "noop": {}  # 默认参数为空
+    "noop":            {}  # 默认参数为空
 }
 
 def setup_manager(action_name):

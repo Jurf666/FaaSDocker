@@ -93,9 +93,12 @@ def calculate_clean_metrics(real_metrics, noise_metrics):
     """计算 Real - Noise"""
     clean = {}
     keys_of_interest = [
-        'cycles', 'instructions', 'task-clock', 'context-switches', 
-        'cache-misses', 'L1-dcache-load-misses', 'LLC-load-misses', 
-        'page-faults'
+        'cycles','instructions',
+        'task-clock','context-switches',
+        'cache-misses','L1-dcache-load-misses',
+        'LLC-load-misses','page-faults',
+        'major-faults','minor-faults',
+        'branch-misses'
     ]
     for k in keys_of_interest:
         r_val = real_metrics.get(k, 0.0)
@@ -176,8 +179,8 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
                     prefix = f"{run_id}_" if run_id else ""
                     perf_output_filename = os.path.join(custom_log_dir, f"{prefix}{function_name}_{container_id[:12]}.txt")
                     
-                    events = 'cycles,instructions,task-clock,context-switches,cache-misses,L1-dcache-load-misses,LLC-load-misses,page-faults,major-faults,minor-faults'
-                    perf_cmd = ['sudo', 'perf', 'stat', '-p', str(pid), '-e', events, 'sleep', '300']
+                    events = 'cycles,instructions,task-clock,context-switches,cache-misses,L1-dcache-load-misses,LLC-load-misses,page-faults,major-faults,minor-faults,branch-misses'
+                    perf_cmd = ['sudo', 'perf', 'stat', '-p', str(pid), '-e', events, 'sleep', '2000']
                     
                     perf_log_file = open(perf_output_filename, 'w')
                     perf_process = subprocess.Popen(perf_cmd, stdout=subprocess.PIPE, stderr=perf_log_file, preexec_fn=os.setsid)
@@ -189,7 +192,7 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
         # 6. RUN
         start = time.time()
         # 调整了 timeout 为 600s 以避免 matmul 超时
-        resp = requests.post(f"http://127.0.0.1:{host_port}/run", json=proxy_payload, timeout=600)
+        resp = requests.post(f"http://127.0.0.1:{host_port}/run", json=proxy_payload, timeout=2000)
         
         if resp.status_code != 200:
             logger.error(f"Container Error ({resp.status_code}): {resp.text}")
