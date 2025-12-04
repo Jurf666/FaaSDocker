@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '251698':
+
+         1,795,491      cycles                           #    0.774 GHz                       
+         1,701,287      instructions                     #    0.95  insn per cycle            
+              2.32 msec task-clock                       #    0.026 CPUs utilized             
+                 1      context-switches                 #  431.248 /sec                      
+            14,196      cache-misses                                                          
+            32,475      L1-dcache-load-misses                                                 
+             5,246      LLC-load-misses                                                       
+                 2      page-faults                      #  862.495 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 2      minor-faults                     #  862.495 /sec                      
+            18,822      branch-misses                                                         
+
+       0.090188124 seconds time elapsed
+

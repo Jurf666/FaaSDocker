@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '135245':
+
+         1,389,663      cycles                           #    0.775 GHz                       
+         1,655,518      instructions                     #    1.19  insn per cycle            
+              1.79 msec task-clock                       #    0.027 CPUs utilized             
+                 2      context-switches                 #    1.116 K/sec                     
+             1,807      cache-misses                                                          
+            29,403      L1-dcache-load-misses                                                 
+               534      LLC-load-misses                                                       
+                 0      page-faults                      #    0.000 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 0      minor-faults                     #    0.000 /sec                      
+            17,371      branch-misses                                                         
+
+       0.067452290 seconds time elapsed
+

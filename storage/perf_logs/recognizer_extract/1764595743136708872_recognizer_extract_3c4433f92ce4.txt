@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '21697':
+
+     3,602,402,792      cycles                           #    2.374 GHz                       
+     3,018,091,004      instructions                     #    0.84  insn per cycle            
+          1,517.14 msec task-clock                       #    0.196 CPUs utilized             
+             1,283      context-switches                 #  845.667 /sec                      
+         2,794,287      cache-misses                                                          
+        16,206,182      L1-dcache-load-misses                                                 
+           631,473      LLC-load-misses                                                       
+            20,137      page-faults                      #   13.273 K/sec                     
+               292      major-faults                     #  192.467 /sec                      
+            19,845      minor-faults                     #   13.080 K/sec                     
+         9,332,609      branch-misses                                                         
+
+       7.731621200 seconds time elapsed
+

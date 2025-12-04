@@ -1,0 +1,48 @@
+{
+  "function": "map_reduce",
+  "run_id": "1764571988900170933",
+  "timestamp": 1764571989.1557803,
+  "is_workflow": false,
+  "raw_metrics": {
+    "cycles": 34554562.0,
+    "instructions": 52153524.0,
+    "task-clock": 15.19,
+    "context-switches": 5.0,
+    "cache-misses": 58769.0,
+    "L1-dcache-load-misses": 601827.0,
+    "LLC-load-misses": 10156.0,
+    "page-faults": 838.0,
+    "major-faults": 0.0,
+    "minor-faults": 838.0,
+    "branch-misses": 356277.0,
+    "seconds": 0.103998024
+  },
+  "noise_baseline": {
+    "cycles": 1343195.0,
+    "instructions": 1633553.0,
+    "task-clock": 1.72,
+    "context-switches": 1.0,
+    "cache-misses": 5639.0,
+    "L1-dcache-load-misses": 28881.0,
+    "LLC-load-misses": 1791.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "branch-misses": 15791.0,
+    "seconds": 0.070460279
+  },
+  "clean_metrics": {
+    "cycles": 33211367.0,
+    "instructions": 50519971.0,
+    "task-clock": 13.469999999999999,
+    "context-switches": 4.0,
+    "cache-misses": 53130.0,
+    "L1-dcache-load-misses": 572946.0,
+    "LLC-load-misses": 8365.0,
+    "page-faults": 838.0,
+    "major-faults": 0.0,
+    "minor-faults": 838.0,
+    "branch-misses": 340486.0,
+    "IPC": 1.5211650577346003
+  }
+}

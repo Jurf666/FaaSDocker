@@ -1,0 +1,48 @@
+{
+  "function": "video_transcode",
+  "run_id": "1764596140680964506",
+  "timestamp": 1764596153.8915517,
+  "is_workflow": true,
+  "raw_metrics": {
+    "cycles": 6109356258.0,
+    "instructions": 16573393414.0,
+    "task-clock": 2552.59,
+    "context-switches": 9224.0,
+    "cache-misses": 4548811.0,
+    "L1-dcache-load-misses": 58561243.0,
+    "LLC-load-misses": 798689.0,
+    "page-faults": 12253.0,
+    "major-faults": 0.0,
+    "minor-faults": 12253.0,
+    "branch-misses": 43379937.0,
+    "seconds": 13.036161169
+  },
+  "noise_baseline": {
+    "cycles": 2015761.0,
+    "instructions": 1633832.0,
+    "task-clock": 1.57,
+    "context-switches": 1.0,
+    "cache-misses": 11104.0,
+    "L1-dcache-load-misses": 30656.0,
+    "LLC-load-misses": 5182.0,
+    "page-faults": 0.0,
+    "major-faults": 0.0,
+    "minor-faults": 0.0,
+    "branch-misses": 18326.0,
+    "seconds": 0.090494818
+  },
+  "clean_metrics": {
+    "cycles": 6107340497.0,
+    "instructions": 16571759582.0,
+    "task-clock": 2551.02,
+    "context-switches": 9223.0,
+    "cache-misses": 4537707.0,
+    "L1-dcache-load-misses": 58530587.0,
+    "LLC-load-misses": 793507.0,
+    "page-faults": 12253.0,
+    "major-faults": 0.0,
+    "minor-faults": 12253.0,
+    "branch-misses": 43361611.0,
+    "IPC": 2.713416681146278
+  }
+}

@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '24125':
+
+        16,470,211      cycles                           #    2.472 GHz                       
+        23,143,307      instructions                     #    1.41  insn per cycle            
+              6.66 msec task-clock                       #    0.068 CPUs utilized             
+                 7      context-switches                 #    1.051 K/sec                     
+            74,826      cache-misses                                                          
+           203,217      L1-dcache-load-misses                                                 
+            25,593      LLC-load-misses                                                       
+               178      page-faults                      #   26.720 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+               178      minor-faults                     #   26.720 K/sec                     
+            84,493      branch-misses                                                         
+
+       0.098065943 seconds time elapsed
+

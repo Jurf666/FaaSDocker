@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '19292':
+
+         1,563,135      cycles                           #    0.786 GHz                       
+         1,652,541      instructions                     #    1.06  insn per cycle            
+              1.99 msec task-clock                       #    0.022 CPUs utilized             
+                 1      context-switches                 #  502.700 /sec                      
+             9,278      cache-misses                                                          
+            30,783      L1-dcache-load-misses                                                 
+             5,429      LLC-load-misses                                                       
+                 0      page-faults                      #    0.000 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 0      minor-faults                     #    0.000 /sec                      
+            16,918      branch-misses                                                         
+
+       0.091300964 seconds time elapsed
+

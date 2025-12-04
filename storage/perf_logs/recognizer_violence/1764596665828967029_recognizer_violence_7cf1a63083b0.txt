@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '21706':
+
+     8,016,925,912      cycles                           #    1.471 GHz                       
+    11,228,830,283      instructions                     #    1.40  insn per cycle            
+          5,449.74 msec task-clock                       #    0.207 CPUs utilized             
+            20,436      context-switches                 #    3.750 K/sec                     
+        19,096,506      cache-misses                                                          
+       141,475,496      L1-dcache-load-misses                                                 
+         4,768,803      LLC-load-misses                                                       
+            59,189      page-faults                      #   10.861 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+            59,189      minor-faults                     #   10.861 K/sec                     
+        33,945,496      branch-misses                                                         
+
+      26.381534807 seconds time elapsed
+

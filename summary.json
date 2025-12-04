@@ -1,0 +1,522 @@
+{
+  "recognizer_translate": {
+    "sample_count": 10,
+    "ipc": 2.1541,
+    "llc_mpki": 0.2119,
+    "l1_mpki": 6.075,
+    "raw_avg": {
+      "cycles": 83503870.2,
+      "instructions": 179874125.5,
+      "task-clock": 28.491999999999997,
+      "context-switches": 22.8,
+      "cache-misses": 131776.8,
+      "L1-dcache-load-misses": 1092742.6,
+      "LLC-load-misses": 38120.1,
+      "page-faults": 426.6,
+      "major-faults": 0.6,
+      "minor-faults": 426.0,
+      "branch-misses": 534228.5,
+      "IPC": 2.226420156114396
+    }
+  },
+  "map_reduce": {
+    "sample_count": 10,
+    "ipc": 1.5197,
+    "llc_mpki": 0.2073,
+    "l1_mpki": 11.326,
+    "raw_avg": {
+      "cycles": 33279862.6,
+      "instructions": 50576650.6,
+      "task-clock": 13.815999999999999,
+      "context-switches": 4.3,
+      "cache-misses": 58479.8,
+      "L1-dcache-load-misses": 572832.5,
+      "LLC-load-misses": 10484.5,
+      "page-faults": 836.4,
+      "major-faults": 0.0,
+      "minor-faults": 836.4,
+      "branch-misses": 341708.9,
+      "IPC": 1.5198839574084402
+    }
+  },
+  "float_operation": {
+    "sample_count": 10,
+    "ipc": 4.1681,
+    "llc_mpki": 0.0004,
+    "l1_mpki": 0.0057,
+    "raw_avg": {
+      "cycles": 36466138297.9,
+      "instructions": 151995957089.4,
+      "task-clock": 11386.256,
+      "context-switches": 1007.8,
+      "cache-misses": 147744.4,
+      "L1-dcache-load-misses": 872880.9,
+      "LLC-load-misses": 64457.4,
+      "page-faults": 167.0,
+      "major-faults": 0.0,
+      "minor-faults": 167.0,
+      "branch-misses": 94269162.9,
+      "IPC": 4.168141560590852
+    }
+  },
+  "video_upload": {
+    "sample_count": 10,
+    "ipc": 1.3547,
+    "llc_mpki": 1.4543,
+    "l1_mpki": 10.4558,
+    "raw_avg": {
+      "cycles": 61490504.0,
+      "instructions": 83302319.9,
+      "task-clock": 22.841,
+      "context-switches": 45.4,
+      "cache-misses": 388025.1,
+      "L1-dcache-load-misses": 870989.4,
+      "LLC-load-misses": 121147.1,
+      "page-faults": 1002.8,
+      "major-faults": 0.2,
+      "minor-faults": 1002.6,
+      "branch-misses": 328304.5,
+      "IPC": 0.7161793631660178
+    }
+  },
+  "video_merge": {
+    "sample_count": 10,
+    "ipc": 1.3413,
+    "llc_mpki": 0.7901,
+    "l1_mpki": 24.1092,
+    "raw_avg": {
+      "cycles": 644856100.9,
+      "instructions": 864934318.7,
+      "task-clock": 247.273,
+      "context-switches": 5917.1,
+      "cache-misses": 2064462.7,
+      "L1-dcache-load-misses": 20852846.5,
+      "LLC-load-misses": 683403.8,
+      "page-faults": 10989.8,
+      "major-faults": 0.1,
+      "minor-faults": 10989.7,
+      "branch-misses": 1928370.8,
+      "IPC": 1.3515154921004073
+    }
+  },
+  "svd_merge": {
+    "sample_count": 10,
+    "ipc": 1.2255,
+    "llc_mpki": 0.4359,
+    "l1_mpki": 8.3419,
+    "raw_avg": {
+      "cycles": 99436722.8,
+      "instructions": 121862326.9,
+      "task-clock": 33.717000000000006,
+      "context-switches": 64.7,
+      "cache-misses": 158365.7,
+      "L1-dcache-load-misses": 1016558.1,
+      "LLC-load-misses": 53121.2,
+      "page-faults": 444.0,
+      "major-faults": 0.0,
+      "minor-faults": 444.0,
+      "branch-misses": 612667.7,
+      "IPC": 1.0980837726759078
+    }
+  },
+  "k-means": {
+    "sample_count": 10,
+    "ipc": 1.7394,
+    "llc_mpki": 0.1276,
+    "l1_mpki": 8.5738,
+    "raw_avg": {
+      "cycles": 358605726.1,
+      "instructions": 623750375.4,
+      "task-clock": 146.794,
+      "context-switches": 85.4,
+      "cache-misses": 329199.4,
+      "L1-dcache-load-misses": 5347936.5,
+      "LLC-load-misses": 79573.5,
+      "page-faults": 2451.1,
+      "major-faults": 0.0,
+      "minor-faults": 2451.1,
+      "branch-misses": 2428346.3,
+      "IPC": 1.9536866236569417
+    }
+  },
+  "recognizer_extract": {
+    "sample_count": 10,
+    "ipc": 0.5545,
+    "llc_mpki": 0.202,
+    "l1_mpki": 3.911,
+    "raw_avg": {
+      "cycles": 3634687859.4,
+      "instructions": 2015457320.3,
+      "task-clock": 1592.924,
+      "context-switches": 679.3,
+      "cache-misses": 1581941.4,
+      "L1-dcache-load-misses": 7882398.1,
+      "LLC-load-misses": 407051.7,
+      "page-faults": 14743.3,
+      "major-faults": 29.3,
+      "minor-faults": 14714.0,
+      "branch-misses": 5417258.0,
+      "IPC": 0.5693882914818906
+    }
+  },
+  "disk": {
+    "sample_count": 10,
+    "ipc": 1.8499,
+    "llc_mpki": 0.0907,
+    "l1_mpki": 5.4437,
+    "raw_avg": {
+      "cycles": 1787718793.0,
+      "instructions": 3307074163.5,
+      "task-clock": 564.5559999999999,
+      "context-switches": 204.5,
+      "cache-misses": 5972706.7,
+      "L1-dcache-load-misses": 18002742.8,
+      "LLC-load-misses": 299958.2,
+      "page-faults": 1341.9,
+      "major-faults": 0.0,
+      "minor-faults": 1341.9,
+      "branch-misses": 494154.6,
+      "IPC": 1.8498464399492416
+    }
+  },
+  "matmul": {
+    "sample_count": 10,
+    "ipc": 2.61,
+    "llc_mpki": 0.1482,
+    "l1_mpki": 20.5329,
+    "raw_avg": {
+      "cycles": 17001794348.5,
+      "instructions": 44374475014.4,
+      "task-clock": 20625.472999999998,
+      "context-switches": 36220.5,
+      "cache-misses": 108757829.2,
+      "L1-dcache-load-misses": 911136788.6,
+      "LLC-load-misses": 6574090.3,
+      "page-faults": 7668.7,
+      "major-faults": 0.0,
+      "minor-faults": 7668.7,
+      "branch-misses": 6608369.3,
+      "IPC": 2.6059185685047153
+    }
+  },
+  "recognizer_adult": {
+    "sample_count": 10,
+    "ipc": 1.19,
+    "llc_mpki": 0.4247,
+    "l1_mpki": 12.2116,
+    "raw_avg": {
+      "cycles": 10907198962.1,
+      "instructions": 12979857745.7,
+      "task-clock": 6175.394,
+      "context-switches": 23683.3,
+      "cache-misses": 21595878.7,
+      "L1-dcache-load-misses": 158504815.2,
+      "LLC-load-misses": 5513064.9,
+      "page-faults": 127877.0,
+      "major-faults": 194.2,
+      "minor-faults": 127682.8,
+      "branch-misses": 41882036.9,
+      "IPC": 1.1832917175956676
+    }
+  },
+  "wordcount_start": {
+    "sample_count": 10,
+    "ipc": 1.9089,
+    "llc_mpki": 0.33,
+    "l1_mpki": 7.4978,
+    "raw_avg": {
+      "cycles": 40370458.6,
+      "instructions": 77063605.4,
+      "task-clock": 16.179,
+      "context-switches": 10.7,
+      "cache-misses": 85134.6,
+      "L1-dcache-load-misses": 577808.1,
+      "LLC-load-misses": 25429.9,
+      "page-faults": 322.8,
+      "major-faults": 0.0,
+      "minor-faults": 322.8,
+      "branch-misses": 329717.8,
+      "IPC": 1.5853676313140173
+    }
+  },
+  "wordcount_count": {
+    "sample_count": 10,
+    "ipc": 2.712,
+    "llc_mpki": 0.1754,
+    "l1_mpki": 3.4934,
+    "raw_avg": {
+      "cycles": 89728667.8,
+      "instructions": 243344419.8,
+      "task-clock": 29.881,
+      "context-switches": 34.9,
+      "cache-misses": 152874.3,
+      "L1-dcache-load-misses": 850104.3,
+      "LLC-load-misses": 42694.7,
+      "page-faults": 625.0,
+      "major-faults": 0.0,
+      "minor-faults": 625.0,
+      "branch-misses": 459600.3,
+      "IPC": 3.1591555716222
+    }
+  },
+  "linpack": {
+    "sample_count": 10,
+    "ipc": 2.8136,
+    "llc_mpki": 0.4412,
+    "l1_mpki": 22.0549,
+    "raw_avg": {
+      "cycles": 2625548890.3,
+      "instructions": 7387152271.7,
+      "task-clock": 868.905,
+      "context-switches": 93.7,
+      "cache-misses": 16647064.1,
+      "L1-dcache-load-misses": 162922877.0,
+      "LLC-load-misses": 3258882.2,
+      "page-faults": 36448.5,
+      "major-faults": 0.0,
+      "minor-faults": 36448.5,
+      "branch-misses": 582988.6,
+      "IPC": 2.8162627101090947
+    }
+  },
+  "recognizer_violence": {
+    "sample_count": 10,
+    "ipc": 1.1992,
+    "llc_mpki": 0.4181,
+    "l1_mpki": 12.2489,
+    "raw_avg": {
+      "cycles": 10756385099.5,
+      "instructions": 12898904807.5,
+      "task-clock": 6035.374000000001,
+      "context-switches": 23721.2,
+      "cache-misses": 21403363.2,
+      "L1-dcache-load-misses": 157996864.6,
+      "LLC-load-misses": 5393672.6,
+      "page-faults": 115438.6,
+      "major-faults": 227.0,
+      "minor-faults": 115211.6,
+      "branch-misses": 41804148.5,
+      "IPC": 1.203085558464921
+    }
+  },
+  "svd_start": {
+    "sample_count": 10,
+    "ipc": 1.3534,
+    "llc_mpki": 0.3573,
+    "l1_mpki": 6.8959,
+    "raw_avg": {
+      "cycles": 117626979.4,
+      "instructions": 159193600.1,
+      "task-clock": 43.75,
+      "context-switches": 31.9,
+      "cache-misses": 225434.1,
+      "L1-dcache-load-misses": 1097780.8,
+      "LLC-load-misses": 56882.2,
+      "page-faults": 1990.2,
+      "major-faults": 0.0,
+      "minor-faults": 1990.2,
+      "branch-misses": 1172337.7,
+      "IPC": 1.2426677409043898
+    }
+  },
+  "couchdb_test": {
+    "sample_count": 10,
+    "ipc": 2.2818,
+    "llc_mpki": 0.1447,
+    "l1_mpki": 6.1952,
+    "raw_avg": {
+      "cycles": 18676848.5,
+      "instructions": 42616670.0,
+      "task-clock": 6.359999999999999,
+      "context-switches": 2.0,
+      "cache-misses": 20924.3,
+      "L1-dcache-load-misses": 264020.6,
+      "LLC-load-misses": 6167.2,
+      "page-faults": 196.9,
+      "major-faults": 0.0,
+      "minor-faults": 196.9,
+      "branch-misses": 128183.2,
+      "IPC": 1.192130556747498
+    }
+  },
+  "image": {
+    "sample_count": 10,
+    "ipc": 2.0033,
+    "llc_mpki": 0.0153,
+    "l1_mpki": 6.6553,
+    "raw_avg": {
+      "cycles": 276673139649.3,
+      "instructions": 554254436791.6,
+      "task-clock": 86558.55799999999,
+      "context-switches": 8008.6,
+      "cache-misses": 40692477.3,
+      "L1-dcache-load-misses": 3688706475.4,
+      "LLC-load-misses": 8492506.6,
+      "page-faults": 386519.9,
+      "major-faults": 0.0,
+      "minor-faults": 386519.9,
+      "branch-misses": 3331261173.8,
+      "IPC": 2.003282842495989
+    }
+  },
+  "video_split": {
+    "sample_count": 10,
+    "ipc": 1.5785,
+    "llc_mpki": 0.4241,
+    "l1_mpki": 30.5419,
+    "raw_avg": {
+      "cycles": 807563174.6,
+      "instructions": 1274704255.6,
+      "task-clock": 310.53999999999996,
+      "context-switches": 5892.5,
+      "cache-misses": 2166767.4,
+      "L1-dcache-load-misses": 38931863.1,
+      "LLC-load-misses": 540556.1,
+      "page-faults": 20995.9,
+      "major-faults": 51.2,
+      "minor-faults": 20944.7,
+      "branch-misses": 2871616.6,
+      "IPC": 1.573117080326917
+    }
+  },
+  "video_transcode": {
+    "sample_count": 40,
+    "ipc": 2.6833,
+    "llc_mpki": 0.0799,
+    "l1_mpki": 3.6075,
+    "raw_avg": {
+      "cycles": 5869757396.125,
+      "instructions": 15750168859.05,
+      "task-clock": 2770.38825,
+      "context-switches": 8899.775,
+      "cache-misses": 6045691.65,
+      "L1-dcache-load-misses": 56818468.8,
+      "LLC-load-misses": 1258609.475,
+      "page-faults": 13098.725,
+      "major-faults": 0.425,
+      "minor-faults": 13098.3,
+      "branch-misses": 40864936.575,
+      "IPC": 2.6852810137569803
+    }
+  },
+  "markdown2html": {
+    "sample_count": 10,
+    "ipc": 2.2648,
+    "llc_mpki": 0.1501,
+    "l1_mpki": 9.78,
+    "raw_avg": {
+      "cycles": 109107352.1,
+      "instructions": 247106525.7,
+      "task-clock": 33.694,
+      "context-switches": 1.7,
+      "cache-misses": 119828.1,
+      "L1-dcache-load-misses": 2416691.3,
+      "LLC-load-misses": 37085.0,
+      "page-faults": 536.9,
+      "major-faults": 0.0,
+      "minor-faults": 536.9,
+      "branch-misses": 669477.3,
+      "IPC": 2.316867351051315
+    }
+  },
+  "recognizer_upload": {
+    "sample_count": 10,
+    "ipc": 1.7398,
+    "llc_mpki": 0.5642,
+    "l1_mpki": 8.3856,
+    "raw_avg": {
+      "cycles": 42646176.3,
+      "instructions": 74197558.8,
+      "task-clock": 16.325,
+      "context-switches": 11.7,
+      "cache-misses": 128847.7,
+      "L1-dcache-load-misses": 622187.9,
+      "LLC-load-misses": 41861.4,
+      "page-faults": 425.3,
+      "major-faults": 0.0,
+      "minor-faults": 425.3,
+      "branch-misses": 309421.8,
+      "IPC": 1.0356422162327594
+    }
+  },
+  "recognizer_censor": {
+    "sample_count": 10,
+    "ipc": 1.8664,
+    "llc_mpki": 0.3953,
+    "l1_mpki": 7.7867,
+    "raw_avg": {
+      "cycles": 44133741.2,
+      "instructions": 82371379.9,
+      "task-clock": 14.852,
+      "context-switches": 7.7,
+      "cache-misses": 102549.5,
+      "L1-dcache-load-misses": 641403.5,
+      "LLC-load-misses": 32561.1,
+      "page-faults": 436.3,
+      "major-faults": 0.0,
+      "minor-faults": 436.3,
+      "branch-misses": 305318.5,
+      "IPC": 1.7816167730875718
+    }
+  },
+  "wordcount_merge": {
+    "sample_count": 10,
+    "ipc": 1.7537,
+    "llc_mpki": 0.2343,
+    "l1_mpki": 7.7999,
+    "raw_avg": {
+      "cycles": 47377653.1,
+      "instructions": 83087777.5,
+      "task-clock": 14.205000000000002,
+      "context-switches": 16.4,
+      "cache-misses": 59842.7,
+      "L1-dcache-load-misses": 648076.8,
+      "LLC-load-misses": 19466.5,
+      "page-faults": 328.3,
+      "major-faults": 0.0,
+      "minor-faults": 328.3,
+      "branch-misses": 318867.3,
+      "IPC": 1.762318621865584
+    }
+  },
+  "svd_compute": {
+    "sample_count": 20,
+    "ipc": 0.6682,
+    "llc_mpki": 0.2502,
+    "l1_mpki": 4.775,
+    "raw_avg": {
+      "cycles": 8396663207.35,
+      "instructions": 5610533521.9,
+      "task-clock": 5801.462999999999,
+      "context-switches": 12253.0,
+      "cache-misses": 3661080.95,
+      "L1-dcache-load-misses": 26790306.0,
+      "LLC-load-misses": 1403703.7,
+      "page-faults": 4648.9,
+      "major-faults": 0.7,
+      "minor-faults": 4648.2,
+      "branch-misses": 2824937.35,
+      "IPC": 0.6848783320928492
+    }
+  },
+  "network": {
+    "sample_count": 10,
+    "ipc": 1.1762,
+    "llc_mpki": 0.7588,
+    "l1_mpki": 7.5716,
+    "raw_avg": {
+      "cycles": 65795841.3,
+      "instructions": 77387657.7,
+      "task-clock": 19.244000000000003,
+      "context-switches": 0.3,
+      "cache-misses": 295708.2,
+      "L1-dcache-load-misses": 585949.2,
+      "LLC-load-misses": 58721.6,
+      "page-faults": 7506.0,
+      "major-faults": 0.0,
+      "minor-faults": 7506.0,
+      "branch-misses": 129342.0,
+      "IPC": 1.0607598102476432
+    }
+  }
+}

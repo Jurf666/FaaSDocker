@@ -16,6 +16,11 @@ from flask import Flask, request, jsonify
 # 复用您原有的 FunctionManager
 from function_manager import FunctionManager 
 
+# --- 新增：全局任务状态存储 ---
+# 结构: { "task-uuid": "running" | "completed" | "failed" }
+task_status_store = {}
+task_store_lock = threading.Lock()
+
 # --- 日志配置 ---
 logging.basicConfig(
     level=logging.INFO,
@@ -123,16 +128,7 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
     request_id = f"req-{uuid.uuid4().hex[:8]}"
     
     # 1. 获取 Manager
-    with manager_lock:
-        if function_name not in function_managers:
-            function_managers[function_name] = FunctionManager(
-                function_name=function_name,
-                image_name='jywang_test', 
-                container_port=5000,
-                host_storage_path=None, 
-                min_idle_containers=1
-            )
-        manager = function_managers[function_name]
+    manager = _get_or_create_manager(function_name)
 
     container_id = None
     perf_process = None
@@ -191,11 +187,13 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
 
         # 6. RUN
         start = time.time()
-        # 调整了 timeout 为 600s 以避免 matmul 超时
+        # 调整了 timeout 为 2000s 以避免 matmul 超时
         resp = requests.post(f"http://127.0.0.1:{host_port}/run", json=proxy_payload, timeout=2000)
         
         if resp.status_code != 200:
             logger.error(f"Container Error ({resp.status_code}): {resp.text}")
+            # 显式抛出包含错误信息的异常，方便调试
+            raise Exception(f"Container Error: {resp.text}") 
         resp.raise_for_status()
         
         # 7. STOP PERF
@@ -256,10 +254,11 @@ def dispatch(function_name, payload, is_workflow=False):
     noop_log_path = None
     
     try:
+        '''
         with manager_lock:
             if 'noop' not in function_managers:
                 function_managers['noop'] = FunctionManager('noop', 'jywang_test', 5000, None, min_idle_containers=1)
-        
+        '''
         # 运行 noop，传入 run_id
         _, noop_cid, noop_log_path = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
         
@@ -326,153 +325,202 @@ def save_result(db_key, filename):
 
 def workflow_video(video_path):
     logger.info("=== Starting Video Workflow ===")
-    if not redis_client: return
-    try:
-        # Upload
-        upload_out = dispatch("video_upload", {}, is_workflow=True)
-        video_key = upload_out['video'][0]
-        name_key = upload_out['video_name'][0]
-        time_key = upload_out['segment_time'][0]
+    if not redis_client: 
+        raise Exception("Redis not connected") # 修正1：主动抛错
 
-        # Split
-        split_out = dispatch("video_split", {
-            "video": video_key, "video_name": name_key, "segment_time": time_key
+    # Upload
+    upload_out = dispatch("video_upload", {}, is_workflow=True)
+    video_key = upload_out['video'][0]
+    name_key = upload_out['video_name'][0]
+    time_key = upload_out['segment_time'][0]
+
+    # Split
+    split_out = dispatch("video_split", {
+        "video": video_key, "video_name": name_key, "segment_time": time_key
+    }, is_workflow=True)
+    chunks_keys = split_out.get('splited_video', [])
+
+    # Transcode
+    target_type_key = f"const_target_{uuid.uuid4().hex[:4]}"
+    redis_client.set(target_type_key, "avi")
+
+    def _run_transcode(chunk_key):
+        res = dispatch("video_transcode", {
+            "video": chunk_key, "target_type": target_type_key
         }, is_workflow=True)
-        chunks_keys = split_out.get('splited_video', [])
+        return res.get('transcoded_video', [None])[0]
 
-        # Transcode
-        target_type_key = f"const_target_{uuid.uuid4().hex[:4]}"
-        redis_client.set(target_type_key, "avi")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        transcode_results = list(executor.map(_run_transcode, chunks_keys))
+    transcode_results = [k for k in transcode_results if k]
 
-        def _run_transcode(chunk_key):
-            res = dispatch("video_transcode", {
-                "video": chunk_key, "target_type": target_type_key
-            }, is_workflow=True)
-            return res.get('transcoded_video', [None])[0]
-
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            transcode_results = list(executor.map(_run_transcode, chunks_keys))
-        transcode_results = [k for k in transcode_results if k]
-
-        # Merge
-        merge_input_key = f"sys-merge-list-{uuid.uuid4().hex}"
-        redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(transcode_results))
-        merge_out = dispatch("video_merge", {
-            "video": merge_input_key, "target_type": target_type_key
-        }, is_workflow=True)
+    # Merge
+    merge_input_key = f"sys-merge-list-{uuid.uuid4().hex}"
+    redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(transcode_results))
+    merge_out = dispatch("video_merge", {
+        "video": merge_input_key, "target_type": target_type_key
+    }, is_workflow=True)
         
-        final_key = merge_out.get('final_video', [None])[0]
-        if final_key: save_result(final_key, "final_video.avi")
-        logger.info("Video Workflow Finished.")
-    except Exception as e:
-        logger.error(f"Video workflow failed: {e}", exc_info=True)
+    final_key = merge_out.get('final_video', [None])[0]
+    if final_key: save_result(final_key, "final_video.avi")
+    logger.info("Video Workflow Finished.")
 
 def workflow_recognizer(img_path):
     logger.info("=== Starting Recognizer Workflow ===")
-    if not redis_client: return
-    try:
-        # 1. Upload
-        upload_out = dispatch("recognizer_upload", {}, is_workflow=True)
-        img_key = upload_out['img'][0]
-        
-        # 2. Parallel Analysis
-        def _run_branch(action):
-            return dispatch(action, {"img": img_key}, is_workflow=True)
+    if not redis_client: 
+        raise Exception("Redis not connected") # 修正1：主动抛错
 
-        with ThreadPoolExecutor(max_workers=3) as ex:
-            f_adult = ex.submit(_run_branch, "recognizer_adult")
-            f_viol = ex.submit(_run_branch, "recognizer_violence")
-            f_extr = ex.submit(_run_branch, "recognizer_extract")
+    # 1. Upload
+    upload_out = dispatch("recognizer_upload", {}, is_workflow=True)
+    img_key = upload_out['img'][0]
+        
+    # 2. Parallel Analysis
+    def _run_branch(action):
+        return dispatch(action, {"img": img_key}, is_workflow=True)
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_adult = ex.submit(_run_branch, "recognizer_adult")
+        f_viol = ex.submit(_run_branch, "recognizer_violence")
+        f_extr = ex.submit(_run_branch, "recognizer_extract")
             
-            key_adult = f_adult.result().get('illegal', [None])[0]
-            key_viol = f_viol.result().get('illegal', [None])[0]
-            key_text = f_extr.result().get('text', [None])[0]
+        key_adult = f_adult.result().get('illegal', [None])[0]
+        key_viol = f_viol.result().get('illegal', [None])[0]
+        key_text = f_extr.result().get('text', [None])[0]
 
-        is_adult = json.loads(redis_client.get(key_adult))
-        is_viol = json.loads(redis_client.get(key_viol))
-        logger.info(f"  > Adult: {is_adult}, Violence: {is_viol}")
+    is_adult = json.loads(redis_client.get(key_adult))
+    is_viol = json.loads(redis_client.get(key_viol))
+    logger.info(f"  > Adult: {is_adult}, Violence: {is_viol}")
         
-        # 3. Text Analysis
-        res_censor_out = dispatch("recognizer_censor", {"text": key_text}, is_workflow=True)
-        dispatch("recognizer_translate", {"text": key_text}, is_workflow=True)
+    # 3. Text Analysis
+    res_censor_out = dispatch("recognizer_censor", {"text": key_text}, is_workflow=True)
+    dispatch("recognizer_translate", {"text": key_text}, is_workflow=True)
         
-        key_censor = res_censor_out.get('illegal', [None])[0]
-        is_censor = json.loads(redis_client.get(key_censor))
-        logger.info(f"  > Censor Illegal: {is_censor}")
+    key_censor = res_censor_out.get('illegal', [None])[0]
+    is_censor = json.loads(redis_client.get(key_censor))
+    logger.info(f"  > Censor Illegal: {is_censor}")
 
-        # 4. Decision & Mosaic
-        if is_adult or is_viol or is_censor:
-            logger.warning("!!! ILLEGAL DETECTED !!! Mosaic...")
-            mosaic_out = dispatch("recognizer_mosaic", {"img": img_key}, is_workflow=True)
-            mosaic_keys = mosaic_out.get('mosaic_image', [])
-            if mosaic_keys: 
-                save_result(mosaic_keys[0], "mosaic_result.jpg")
-        else:
-            logger.info("Content clean. (No mosaic image generated)")
+    # 4. Decision & Mosaic
+    if is_adult or is_viol or is_censor:
+        logger.warning("!!! ILLEGAL DETECTED !!! Mosaic...")
+        mosaic_out = dispatch("recognizer_mosaic", {"img": img_key}, is_workflow=True)
+        mosaic_keys = mosaic_out.get('mosaic_image', [])
+        if mosaic_keys: 
+            save_result(mosaic_keys[0], "mosaic_result.jpg")
+    else:
+        logger.info("Content clean. (No mosaic image generated)")
         
-        # 5. Report (修复点：保存 JSON 报告)
-        report = {"is_adult": is_adult, "is_violence": is_viol, "is_censor": is_censor}
-        report_key = f"report-{uuid.uuid4().hex}"
+    # 5. Report (修复点：保存 JSON 报告)
+    report = {"is_adult": is_adult, "is_violence": is_viol, "is_censor": is_censor}
+    report_key = f"report-{uuid.uuid4().hex}"
         
-        # 先存入 Redis
-        redis_client.set(report_key, json.dumps(report))
-        # 再保存到本地文件
-        save_result(report_key, "recognizer_report.json")
+    # 先存入 Redis
+    redis_client.set(report_key, json.dumps(report))
+    # 再保存到本地文件
+    save_result(report_key, "recognizer_report.json")
         
-        logger.info("Recognizer Workflow Finished.")
-        
-    except Exception as e:
-        logger.error(f"Recognizer workflow failed: {e}", exc_info=True)
+    logger.info("Recognizer Workflow Finished.")
+       
 def workflow_svd():
     logger.info("=== Starting SVD Workflow ===")
-    if not redis_client: return
-    try:
-        start_out = dispatch("svd_start", {}, is_workflow=True)
-        matrix_keys = start_out.get('matrix', [])
+    if not redis_client: 
+        raise Exception("Redis not connected") # 修正1：主动抛错
+
+    start_out = dispatch("svd_start", {}, is_workflow=True)
+    matrix_keys = start_out.get('matrix', [])
         
-        def _run_compute(m_key):
-            res = dispatch("svd_compute", {"matrix": m_key}, is_workflow=True)
-            return res.get('res', [None])[0]
+    def _run_compute(m_key):
+        res = dispatch("svd_compute", {"matrix": m_key}, is_workflow=True)
+        return res.get('res', [None])[0]
             
-        with ThreadPoolExecutor(max_workers=len(matrix_keys) or 1) as ex:
-            compute_results = list(ex.map(_run_compute, matrix_keys))
-        compute_results = [k for k in compute_results if k]
+    with ThreadPoolExecutor(max_workers=len(matrix_keys) or 1) as ex:
+        compute_results = list(ex.map(_run_compute, matrix_keys))
+    compute_results = [k for k in compute_results if k]
         
-        merge_input_key = f"sys-svd-list-{uuid.uuid4().hex}"
-        redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(compute_results))
-        merge_out = dispatch("svd_merge", {"res": merge_input_key}, is_workflow=True)
+    merge_input_key = f"sys-svd-list-{uuid.uuid4().hex}"
+    redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(compute_results))
+    merge_out = dispatch("svd_merge", {"res": merge_input_key}, is_workflow=True)
         
-        res_keys = merge_out.get('final_res', [])
-        if res_keys: save_result(res_keys[0], "svd_result.pkl")
-        logger.info("SVD Workflow Finished.")
-    except Exception as e:
-        logger.error(f"SVD workflow failed: {e}", exc_info=True)
+    res_keys = merge_out.get('final_res', [])
+    if res_keys: save_result(res_keys[0], "svd_result.pkl")
+    logger.info("SVD Workflow Finished.")
 
 def workflow_wordcount():
     logger.info("=== Starting WordCount Workflow ===")
-    if not redis_client: return
-    try:
-        start_out = dispatch("wordcount_start", {}, is_workflow=True)
-        file_keys = start_out.get('file', [])
-        if not file_keys: return
+    if not redis_client: 
+        raise Exception("Redis not connected") # 修正1：主动抛错
 
-        def _run_count(f_key):
-            res = dispatch("wordcount_count", {"file": f_key}, is_workflow=True)
-            return res.get('res', [None])[0]
+    start_out = dispatch("wordcount_start", {}, is_workflow=True)
+    file_keys = start_out.get('file', [])
+    if not file_keys: return
+
+    def _run_count(f_key):
+        res = dispatch("wordcount_count", {"file": f_key}, is_workflow=True)
+        return res.get('res', [None])[0]
         
-        with ThreadPoolExecutor(max_workers=len(file_keys)) as ex:
-            count_results = list(ex.map(_run_count, file_keys))
-        count_results = [k for k in count_results if k]
+    with ThreadPoolExecutor(max_workers=len(file_keys)) as ex:
+        count_results = list(ex.map(_run_count, file_keys))
+    count_results = [k for k in count_results if k]
         
-        merge_input_key = f"sys-wc-list-{uuid.uuid4().hex}"
-        redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(count_results))
-        merge_out = dispatch("wordcount_merge", {"res": merge_input_key}, is_workflow=True)
+    merge_input_key = f"sys-wc-list-{uuid.uuid4().hex}"
+    redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(count_results))
+    merge_out = dispatch("wordcount_merge", {"res": merge_input_key}, is_workflow=True)
         
-        count_keys = merge_out.get('final_count', [])
-        if count_keys: save_result(count_keys[0], "wordcount_result.txt")
-        logger.info("WordCount Workflow Finished.")
+    count_keys = merge_out.get('final_count', [])
+    if count_keys: save_result(count_keys[0], "wordcount_result.txt")
+    logger.info("WordCount Workflow Finished.")
+
+
+def update_task_status(task_id, status):
+    with task_store_lock:
+        task_status_store[task_id] = status
+
+def run_workflow_async(name, payload, task_id):
+    try:
+        update_task_status(task_id, "running")
+        
+        # 执行原有的逻辑
+        if name == "video":
+            workflow_video(payload)
+        elif name == "recognizer":
+            workflow_recognizer(payload)
+        elif name == "svd":
+            workflow_svd()
+        elif name == "wordcount":
+            workflow_wordcount()
+            
+        update_task_status(task_id, "completed")
+        logger.info(f"Task {task_id} ({name}) completed.")
     except Exception as e:
-        logger.error(f"WordCount workflow failed: {e}", exc_info=True)
+        logger.error(f"Task {task_id} failed: {e}")
+        update_task_status(task_id, "failed")
+
+def clean_up():
+    logger.info("Stopping all containers...")
+    with manager_lock:
+        for m in function_managers.values(): m.stop_all_containers()
+
+# --- 新增的辅助函数 ---
+def _get_or_create_manager(function_name):
+    """
+    线程安全地获取 FunctionManager，如果不存在则使用默认配置创建。
+    """
+    # 1. 快速检查（无锁），稍微提高性能（可选）
+    if function_name in function_managers:
+        return function_managers[function_name]
+
+    # 2. 加锁进行创建或获取
+    with manager_lock:
+        # 双重检查：防止在等待锁的过程中已经被别的线程创建了
+        if function_name not in function_managers:
+            # 统一在这里配置镜像名、端口等参数
+            function_managers[function_name] = FunctionManager(
+                function_name=function_name,
+                image_name='jywang_test',     # 统一配置
+                container_port=5000,          # 统一配置
+                host_storage_path=None, 
+                min_idle_containers=1
+            )
+        return function_managers[function_name]
 
 # -------------------------------------------------------------------------
 # Part 5: HTTP 接口
@@ -483,14 +531,14 @@ def create_manager():
     body = request.get_json(silent=True) or {}
     function_name = body.get("function_name")
     if not function_name: return jsonify({"error": "function_name required"}), 400
-    with manager_lock:
-        if function_name in function_managers: return jsonify({"status": "exists"}), 200
-        function_managers[function_name] = FunctionManager(
-            function_name=function_name,
-            image_name='jywang_test', container_port=5000, host_storage_path=None, min_idle_containers=1
-        )
-    return jsonify({"status": "created"}), 201
-
+    already_exists = function_name in function_managers
+    _get_or_create_manager(function_name)
+    
+    if already_exists:
+        return jsonify({"status": "exists"}), 200
+    else:
+        return jsonify({"status": "created"}), 201
+'''
 @app.route('/dispatch_workflow', methods=['POST'])
 def dispatch_workflow_api():
     body = request.get_json(silent=True) or {}
@@ -505,7 +553,27 @@ def dispatch_workflow_api():
         t.start()
         return jsonify({"status": "started", "workflow": name}), 202
     return jsonify({"error": "Unknown workflow"}), 400
-
+'''
+@app.route('/dispatch_workflow', methods=['POST'])
+def dispatch_workflow_api():
+    body = request.get_json(silent=True) or {}
+    name = body.get("workflow_name")
+    payload = body.get("payload", {})
+    
+    # 1. 生成 Task ID
+    task_id = f"task-{uuid.uuid4().hex[:8]}"
+    
+    # 2. 启动线程，传入 task_id
+    t = threading.Thread(target=run_workflow_async, args=(name, payload, task_id))
+    t.start()
+    
+    # 3. 立即返回 Task ID
+    return jsonify({
+        "status": "accepted", 
+        "task_id": task_id,
+        "message": "Task running in background"
+    }), 202
+    
 @app.route('/dispatch/<function_name>', methods=['POST'])
 def dispatch_single(function_name):
     payload = request.get_json(silent=True) or {}
@@ -528,10 +596,14 @@ def manager_status(function_name):
         ports = [ {"id": cid[:12], "host_port": d.get("host_port")} for cid,d in m.containers.items() ]
     return jsonify({"function": function_name, "total": total, "idle": idle, "busy": busy, "containers": ports})
 
-def clean_up():
-    logger.info("Stopping all containers...")
-    with manager_lock:
-        for m in function_managers.values(): m.stop_all_containers()
+# --- 新增：查询状态接口 ---432
+@app.route('/check_task/<task_id>', methods=['GET'])
+def check_task(task_id):
+    status = "unknown"
+    with task_store_lock:
+        status = task_status_store.get(task_id, "unknown")
+    return jsonify({"task_id": task_id, "status": status}), 200
+
 atexit.register(clean_up)
 
 if __name__ == '__main__':

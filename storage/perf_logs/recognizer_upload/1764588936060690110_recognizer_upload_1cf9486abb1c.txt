@@ -1,0 +1,17 @@
+
+ Performance counter stats for process id '252209':
+
+       294,901,490      cycles                           #    3.128 GHz                       
+       618,163,513      instructions                     #    2.10  insn per cycle            
+             94.28 msec task-clock                       #    0.000 CPUs utilized             
+                17      context-switches                 #  180.311 /sec                      
+           278,780      cache-misses                                                          
+         4,440,821      L1-dcache-load-misses                                                 
+            54,959      LLC-load-misses                                                       
+             3,215      page-faults                      #   34.100 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+             3,215      minor-faults                     #   34.100 K/sec                     
+         2,349,924      branch-misses                                                         
+
+    2002.117121135 seconds time elapsed
+

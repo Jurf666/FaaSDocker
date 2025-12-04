@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '178759':
+
+     1,820,444,885      cycles                           #    3.178 GHz                       
+     3,391,532,499      instructions                     #    1.86  insn per cycle            
+            572.90 msec task-clock                       #    0.203 CPUs utilized             
+               227      context-switches                 #  396.231 /sec                      
+         5,985,035      cache-misses                                                          
+        18,388,753      L1-dcache-load-misses                                                 
+           313,100      LLC-load-misses                                                       
+             1,343      page-faults                      #    2.344 K/sec                     
+                 0      major-faults                     #    0.000 /sec                      
+             1,343      minor-faults                     #    2.344 K/sec                     
+           506,012      branch-misses                                                         
+
+       2.820784462 seconds time elapsed
+

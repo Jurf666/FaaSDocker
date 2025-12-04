@@ -16,20 +16,20 @@ class FunctionManager:
         self.docker_client = docker.from_env()
         self.containers = {}  # {container_id: {"container_obj": ..., "status": "idle/busy", "last_active": timestamp, "host_port": ...}}
         self.lock = threading.Lock()
-        self.next_host_port = host_port_start
+        #self.next_host_port = host_port_start
         self._cleaner_stop_event = threading.Event()
 
         self.cleaner_thread = threading.Thread(target=self._run_cleaner, daemon=True)
         self.cleaner_thread.start()
         print(f"FunctionManager for {self.function_name} initialized.")
-
-    def _get_next_host_port(self):
+    '''
+    def _get_next_host_port(self):#是否是多余的
         with self.lock:
             port = self.next_host_port
             self.next_host_port += 1
             # TODO: Add logic to check if port is actually free
             return port
-
+    '''
     def _wait_for_container_service(self, host_port, timeout=30, check_interval=0.01):
         """
         timeout: 总超时时间(秒)
@@ -140,7 +140,6 @@ class FunctionManager:
             }
         print(f"Container '{container_name}' created id={container.id[:12]} host_port={host_port}. Service ready.")
         return container.id
-
 
     def get_container_for_request(self):
         with self.lock:

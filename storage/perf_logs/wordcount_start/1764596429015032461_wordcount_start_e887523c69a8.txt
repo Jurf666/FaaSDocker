@@ -1,0 +1,18 @@
+sleep: Interrupt
+
+ Performance counter stats for process id '26346':
+
+        13,766,806      cycles                           #    1.393 GHz                       
+        17,096,939      instructions                     #    1.24  insn per cycle            
+              9.88 msec task-clock                       #    0.091 CPUs utilized             
+                10      context-switches                 #    1.012 K/sec                     
+            72,035      cache-misses                                                          
+           171,384      L1-dcache-load-misses                                                 
+            23,264      LLC-load-misses                                                       
+                 1      page-faults                      #  101.196 /sec                      
+                 0      major-faults                     #    0.000 /sec                      
+                 1      minor-faults                     #  101.196 /sec                      
+           120,246      branch-misses                                                         
+
+       0.108950002 seconds time elapsed
+
