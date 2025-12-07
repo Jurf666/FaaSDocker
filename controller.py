@@ -33,7 +33,9 @@ logger = logging.getLogger("Controller")
 REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0.1:5984/')
-PERF_LOG_DIR = '/home/jywang/FaaSDocker/storage/perf_logs'
+# 定义日志存储路径, 使用相对路径更加健全
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PERF_LOG_DIR = os.path.join(BASE_DIR, 'storage', 'perf_logs')
 
 app = Flask(__name__)
 
@@ -304,7 +306,7 @@ def dispatch(function_name, payload, is_workflow=False):
 
 def save_result(db_key, filename):
     if not redis_client: return
-    output_dir = '/home/jywang/FaaSDocker/results'
+    output_dir = './results'
     if not os.path.exists(output_dir): os.makedirs(output_dir)
     filepath = os.path.join(output_dir, filename)
     try:
