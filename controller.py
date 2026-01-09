@@ -36,11 +36,8 @@ COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0
 # 定义日志存储路径, 使用相对路径更加健全
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERF_LOG_DIR = os.path.join(BASE_DIR, 'storage', 'perf_logs')
-<<<<<<< Updated upstream
-=======
 # Perf 开关：设置为 'false' 或 '0' 可禁用 perf 记录
 ENABLE_PERF = os.environ.get('ENABLE_PERF', 'false').lower() not in ['false', '0', 'no']
->>>>>>> Stashed changes
 
 app = Flask(__name__)
 

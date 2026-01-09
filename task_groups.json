@@ -7,10 +7,7 @@
   "svd_merge": 1,
   "k-means": 3,
   "recognizer_extract": 1,
-<<<<<<< Updated upstream
-=======
   "recognizer_mosaic": 1,
->>>>>>> Stashed changes
   "disk": 3,
   "matmul": 0,
   "recognizer_adult": 1,
