@@ -2,15 +2,20 @@ import requests
 import time
 import json
 
-CONTROLLER_URL = "http://localhost:5000"
-REPEAT_TIMES = 10  # 每个任务重复 10 次
+import os
+
+# Controller 地址可通过环境变量 `CONTROLLER_HOST`/`CONTROLLER_PORT` 覆盖
+controller_host = os.environ.get('CONTROLLER_HOST', 'localhost')
+controller_port = os.environ.get('CONTROLLER_PORT', '5000')
+CONTROLLER_URL = f"http://{controller_host}:{controller_port}"
+REPEAT_TIMES = 1  # 每个任务重复 n 次
 
 # 定义重负载参数 (根据之前的讨论优化)
 # 简单 Action 使用 /dispatch/<name>
 SIMPLE_ACTIONS = {
-     "float_operation": {"param": 50000000},#可调整
-    "matmul":          {"param": 3000},#可调整
-    "linpack":         {"param": 4000},#可调整
+    "float_operation": {"param": 5000000},#可调整
+    "matmul":          {"param": 1000},#可调整
+    "linpack":         {"param": 1000},#可调整
     "k-means":         {},
     "image":           {},# 代码内定读取文件夹下的test_image.png，可更换图片文件
     "network":         {"name": "10mb"},#上传文件夹下的指定文件到服务器，可调整
@@ -18,7 +23,6 @@ SIMPLE_ACTIONS = {
     "map_reduce":      {},#代码内定读取文件夹下的data.txt，理论可调整但是不好调整
     "disk":            {"bs": "1M", "count": 1000},#可调整
     "couchdb_test":    {},
-    "noop":            {}  # 默认参数为空
 }
 
 # 工作流使用 /dispatch_workflow (payload 放在 body 中)
@@ -81,7 +85,7 @@ def main():
     
     for i in range(1, REPEAT_TIMES + 1):
         print(f"\n--- Round {i}/{REPEAT_TIMES} ---")
-        '''
+        
         # 1. 运行所有简单 Action
         for name, payload in SIMPLE_ACTIONS.items():
             run_simple(name, payload)
@@ -90,7 +94,7 @@ def main():
         # 2. 运行所有 Workflow
         for name in WORKFLOWS:
             run_workflow(name)
-            time.sleep(2)
+            time.sleep(2)'''
 
     print("\n=== Experiment Finished ===")
 

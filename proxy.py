@@ -73,7 +73,8 @@ class ActionRunner:
             # 简单模式
             action_context["store"] = None
 
-        # 3. 执行代码
+        # 3&4. 执行代码并运行 main（统一计时：exec + main 的总时间）
+        func_start = time.time()
         try:
             if not self.compiled_code:
                 # 如果没有编译代码（说明 init 没跑或失败了），尝试现场补救（仅限简单情况）或报错
@@ -84,7 +85,7 @@ class ActionRunner:
             print(f"[Proxy] Execution Error: {e}")
             return {"error": str(e), "traceback": traceback.format_exc()}
 
-        # 4. 运行 main
+        # 运行 main 函数
         func_result = None
         if 'main' in action_context and callable(action_context['main']):
             try:
@@ -92,11 +93,15 @@ class ActionRunner:
             except Exception as e:
                 print(f"[Proxy] Main function error: {e}")
                 return {"error": str(e), "traceback": traceback.format_exc()}
+        
+        func_end = time.time()
+        func_duration = func_end - func_start  # exec + main 的总执行时间
 
         # 5. 构造返回
         response = {
             "func_result": func_result,
-            "workdir_used": env_workdir
+            "workdir_used": env_workdir,
+            "func_duration": func_duration  # 纯函数执行时间（秒）
         }
         
         if is_workflow_mode and current_store:
@@ -104,6 +109,7 @@ class ActionRunner:
         else:
             response["output_keys"] = {}
 
+        print(f"[Proxy] {self.action_name} func_duration: {func_duration:.6f}s (result keys: {list(response.keys())})")
         return response
 
 proxy = Flask(__name__)

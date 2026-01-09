@@ -223,7 +223,11 @@ def perform_grouping():
                 fname = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.json")
                 save_mapping(mapping, fname)
                 png = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.png")
+<<<<<<< Updated upstream
                 evr = plot_pca_and_save(X_scaled, labels, names, png, f"kmeans (Silhouette: {sil})")
+=======
+                evr = plot_pca_and_save(X_scaled, labels, names, png, f"kmeans ")
+>>>>>>> Stashed changes
 
             elif method_lower == 'gmm':
                 try:
@@ -242,7 +246,11 @@ def perform_grouping():
                 fname = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.json")
                 save_mapping(mapping, fname)
                 png = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.png")
+<<<<<<< Updated upstream
                 evr = plot_pca_and_save(X_scaled, labels, names, png, f"GMM (Silhouette: {sil})")
+=======
+                evr = plot_pca_and_save(X_scaled, labels, names, png, f"GMM ")
+>>>>>>> Stashed changes
 
             elif method_lower == 'hierarchical':
                 try:
@@ -261,7 +269,11 @@ def perform_grouping():
                 fname = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.json")
                 save_mapping(mapping, fname)
                 png = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.png")
+<<<<<<< Updated upstream
                 evr = plot_pca_and_save(X_scaled, labels, names, png, f"Hierarchical (Silhouette: {sil})")
+=======
+                evr = plot_pca_and_save(X_scaled, labels, names, png, f"Hierarchical ")
+>>>>>>> Stashed changes
 
             elif method_lower == 'spectral':
                 try:
@@ -280,7 +292,11 @@ def perform_grouping():
                 fname = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.json")
                 save_mapping(mapping, fname)
                 png = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.png")
+<<<<<<< Updated upstream
                 evr = plot_pca_and_save(X_scaled, labels, names, png, f"Spectral (Silhouette: {sil})")
+=======
+                evr = plot_pca_and_save(X_scaled, labels, names, png, f"Spectral ")
+>>>>>>> Stashed changes
 
             elif method_lower == 'cosine_agglomerative':
                 try:
@@ -301,7 +317,11 @@ def perform_grouping():
                 fname = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.json")
                 save_mapping(mapping, fname)
                 png = os.path.join(out_dir, f"{method_lower}_n{N_CLUSTERS}.png")
+<<<<<<< Updated upstream
                 evr = plot_pca_and_save(X_scaled, labels, names, png, f"Cosine-Agglomerative (Silhouette: {sil})")
+=======
+                evr = plot_pca_and_save(X_scaled, labels, names, png, f"Cosine-Agglomerative ")
+>>>>>>> Stashed changes
 
             else:
                 print(f"[WARN] Unknown method {method}, skipping.")
