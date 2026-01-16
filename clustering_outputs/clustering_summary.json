@@ -1,0 +1,67 @@
+{
+  "kmeans": {
+    "silhouette": 0.367308270985797,
+    "silhouette_norm": 0.6836541354928984,
+    "dbi": 0.5744198496116549,
+    "dbi_norm": 1.0,
+    "ch": 21.709116496964654,
+    "ch_norm": 0.999999999999954,
+    "composite_score": 0.8418270677464401,
+    "final_score": 0.8418270677464401,
+    "output_mapping": "/home/yyxie/FaaSDocker/clustering_outputs/kmeans_n6.json",
+    "pca_png": "/home/yyxie/FaaSDocker/clustering_outputs/kmeans_n6.png",
+    "error": null
+  },
+  "gmm": {
+    "silhouette": 0.30921484168755264,
+    "silhouette_norm": 0.6546074208437763,
+    "dbi": 0.6800036818186558,
+    "dbi_norm": 0.718300723136038,
+    "ch": 15.529394529914756,
+    "ch_norm": 0.7153397758994635,
+    "composite_score": 0.6858618825425923,
+    "final_score": 0.6858618825425923,
+    "output_mapping": "/home/yyxie/FaaSDocker/clustering_outputs/gmm_n6.json",
+    "pca_png": "/home/yyxie/FaaSDocker/clustering_outputs/gmm_n6.png",
+    "error": null
+  },
+  "hierarchical": {
+    "silhouette": 0.3224356190027894,
+    "silhouette_norm": 0.6612178095013947,
+    "dbi": 0.594801888796575,
+    "dbi_norm": 0.9378308587151395,
+    "ch": 20.176322682556275,
+    "ch_norm": 0.9293940029929997,
+    "composite_score": 0.7978369629638392,
+    "final_score": 0.7978369629638392,
+    "output_mapping": "/home/yyxie/FaaSDocker/clustering_outputs/hierarchical_n6.json",
+    "pca_png": "/home/yyxie/FaaSDocker/clustering_outputs/hierarchical_n6.png",
+    "error": null
+  },
+  "spectral": {
+    "silhouette": 0.28992539865745487,
+    "silhouette_norm": 0.6449626993287274,
+    "dbi": 1.2798698318419441,
+    "dbi_norm": 0.0,
+    "ch": 9.86329914262426,
+    "ch_norm": 0.4543390397302849,
+    "composite_score": 0.4133491576104207,
+    "final_score": 0.4133491576104207,
+    "output_mapping": "/home/yyxie/FaaSDocker/clustering_outputs/spectral_n6.json",
+    "pca_png": "/home/yyxie/FaaSDocker/clustering_outputs/spectral_n6.png",
+    "error": null
+  },
+  "cosine_agglomerative": {
+    "silhouette": 0.04332600339442258,
+    "silhouette_norm": 0.5216630016972112,
+    "dbi": 0.8703278710523827,
+    "dbi_norm": 0.38315873071579426,
+    "ch": 7.944017744807963,
+    "ch_norm": 0.3659300343207575,
+    "composite_score": 0.4489651269274954,
+    "final_score": 0.4489651269274954,
+    "output_mapping": "/home/yyxie/FaaSDocker/clustering_outputs/cosine_agglomerative_n6.json",
+    "pca_png": "/home/yyxie/FaaSDocker/clustering_outputs/cosine_agglomerative_n6.png",
+    "error": null
+  }
+}

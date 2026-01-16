@@ -36,6 +36,8 @@ COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0
 # 定义日志存储路径, 使用相对路径更加健全
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERF_LOG_DIR = os.path.join(BASE_DIR, 'storage', 'perf_logs')
+# Perf 开关：设置为 'false' 或 '0' 可禁用 perf 记录
+ENABLE_PERF = os.environ.get('ENABLE_PERF', 'false').lower() not in ['false', '0', 'no']
 
 app = Flask(__name__)
 
@@ -135,6 +137,7 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
     container_id = None
     perf_process = None
     perf_log_file = None
+    pid = None
     
     try:
         # 2. 获取容器
@@ -161,7 +164,7 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
 
         # 5. START PERF
         perf_output_filename = None
-        if custom_log_dir:
+        if custom_log_dir and ENABLE_PERF:
             try:
                 pid = 0
                 with manager.lock:
@@ -209,15 +212,17 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
         # 8. 解析结果
         full_data = resp.json() 
         proxy_result = full_data.get("result", {})
+        # proxy 返回结构: { start_time, end_time, duration(HTTP 全过程), result: { func_result, func_duration, ... } }
+        duration_from_proxy = proxy_result.get("func_duration", 0)  # 只取函数执行时间
         
         duration = time.time() - start
         mode_str = "WORKFLOW" if is_workflow else "SIMPLE"
-        logger.info(f"[Run][{mode_str}] {function_name} finished in {duration:.2f}s")
+        logger.info(f"[Run][{mode_str}] {function_name} finished in {duration:.2f}s (func duration: {duration_from_proxy:.4f}s) [proxy_result keys: {list(proxy_result.keys())}]")
         
         final_result = proxy_result.get("output_keys", {}) if is_workflow else proxy_result.get("func_result")
-        
-        # 返回结果、容器ID以及本次生成的日志路径（供去噪使用）
-        return final_result, container_id, perf_output_filename
+
+        # 返回结果、容器ID、perf 日志路径、容器 pid 以及函数执行时间（供 cgroup 操作使用）
+        return final_result, container_id, perf_output_filename, pid, duration_from_proxy
 
     except Exception as e:
         if perf_process:
@@ -239,6 +244,8 @@ def dispatch(function_name, payload, is_workflow=False):
     """
     智能调度器：自动执行去噪逻辑 (noop -> target)。
     每次调用生成唯一的 run_id (时间戳)，确保文件不覆盖。
+    
+    注意：如果 ENABLE_PERF=false，则不会生成 perf 日志。
     """
     action_log_dir = os.path.join(PERF_LOG_DIR, function_name)
     os.makedirs(action_log_dir, exist_ok=True)
@@ -249,8 +256,8 @@ def dispatch(function_name, payload, is_workflow=False):
 
     # Step 1: Baseline (Noop)
     if function_name == 'noop':
-        res, _, _ = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
-        return res
+        res, _, _, _, duration = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
+        return res, {'container_pid': None, 'container_id': None, 'perf_log': None, 'duration': duration, 'func_duration': duration}
 
     noise_metrics = {}
     noop_log_path = None
@@ -262,7 +269,7 @@ def dispatch(function_name, payload, is_workflow=False):
                 function_managers['noop'] = FunctionManager('noop', 'jywang_test', 5000, None, min_idle_containers=1)
         '''
         # 运行 noop，传入 run_id
-        _, noop_cid, noop_log_path = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
+        _, noop_cid, noop_log_path, noop_pid, _ = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
         
         if noop_log_path:
             noise_metrics = parse_perf_log(noop_log_path)
@@ -271,7 +278,7 @@ def dispatch(function_name, payload, is_workflow=False):
 
     # Step 2: Target
     # 运行 target，传入相同的 run_id，这样它们的文件前缀一致
-    result, target_cid, real_log_path = _dispatch_core(function_name, payload, is_workflow, custom_log_dir=action_log_dir, run_id=run_id)
+    result, target_cid, real_log_path, target_pid, target_duration = _dispatch_core(function_name, payload, is_workflow, custom_log_dir=action_log_dir, run_id=run_id)
 
     # Step 3: Calculate & Save
     try:
@@ -296,6 +303,37 @@ def dispatch(function_name, payload, is_workflow=False):
             logger.info(f"[Denoise] Metrics saved to {clean_output_path}")
     except Exception as e:
         logger.warning(f"[Denoise] Calculation failed: {e}")
+
+    # 对于 simple 调用，确保返回一个 dict，并在 '__meta__' 中附加 pid/container/perf 信息，便于客户端进行 cgroup/pinning
+    try:
+        if not is_workflow:
+            if isinstance(result, dict):
+                out = dict(result)  # shallow copy
+            else:
+                out = {"_value": result}
+
+            out.setdefault('__meta__', {})
+            out['__meta__'].update({
+                'container_pid': target_pid,
+                'container_id': target_cid,
+                'perf_log': real_log_path,
+                'duration': target_duration,
+                'func_duration': target_duration
+            })
+            return out
+        else:
+            # workflow 调用：返回结果和一个附加的元数据字典（包含本次调用的 pid/container/duration）
+            # 注意：workflow 内部会多次调用 dispatch，每次都会有自己的 pid
+            # 这里只返回最外层的 target action 的 pid，子任务由 workflow 函数收集
+            return result, {
+                'container_pid': target_pid,
+                'container_id': target_cid,
+                'perf_log': real_log_path,
+                'duration': target_duration,
+                'func_duration': target_duration
+            }
+    except Exception:
+        pass
 
     return result
 
@@ -330,16 +368,20 @@ def workflow_video(video_path):
     if not redis_client: 
         raise Exception("Redis not connected") # 修正1：主动抛错
 
+    subtasks = []  # 收集所有子任务元数据
+
     # Upload
-    upload_out = dispatch("video_upload", {}, is_workflow=True)
+    upload_out, meta = dispatch("video_upload", {}, is_workflow=True)
+    subtasks.append({'name': 'video_upload', **meta})
     video_key = upload_out['video'][0]
     name_key = upload_out['video_name'][0]
     time_key = upload_out['segment_time'][0]
 
     # Split
-    split_out = dispatch("video_split", {
+    split_out, meta = dispatch("video_split", {
         "video": video_key, "video_name": name_key, "segment_time": time_key
     }, is_workflow=True)
+    subtasks.append({'name': 'video_split', **meta})
     chunks_keys = split_out.get('splited_video', [])
 
     # Transcode
@@ -347,9 +389,10 @@ def workflow_video(video_path):
     redis_client.set(target_type_key, "avi")
 
     def _run_transcode(chunk_key):
-        res = dispatch("video_transcode", {
+        res, meta = dispatch("video_transcode", {
             "video": chunk_key, "target_type": target_type_key
         }, is_workflow=True)
+        subtasks.append({'name': 'video_transcode', **meta})
         return res.get('transcoded_video', [None])[0]
 
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -359,26 +402,33 @@ def workflow_video(video_path):
     # Merge
     merge_input_key = f"sys-merge-list-{uuid.uuid4().hex}"
     redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(transcode_results))
-    merge_out = dispatch("video_merge", {
+    merge_out, meta = dispatch("video_merge", {
         "video": merge_input_key, "target_type": target_type_key
     }, is_workflow=True)
+    subtasks.append({'name': 'video_merge', **meta})
         
     final_key = merge_out.get('final_video', [None])[0]
     if final_key: save_result(final_key, "final_video.avi")
     logger.info("Video Workflow Finished.")
+    return subtasks
 
 def workflow_recognizer(img_path):
     logger.info("=== Starting Recognizer Workflow ===")
     if not redis_client: 
         raise Exception("Redis not connected") # 修正1：主动抛错
 
+    subtasks = []  # 收集所有子任务元数据
+
     # 1. Upload
-    upload_out = dispatch("recognizer_upload", {}, is_workflow=True)
+    upload_out, meta = dispatch("recognizer_upload", {}, is_workflow=True)
+    subtasks.append({'name': 'recognizer_upload', **meta})
     img_key = upload_out['img'][0]
         
     # 2. Parallel Analysis
     def _run_branch(action):
-        return dispatch(action, {"img": img_key}, is_workflow=True)
+        res, meta = dispatch(action, {"img": img_key}, is_workflow=True)
+        subtasks.append({'name': action, **meta})
+        return res
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         f_adult = ex.submit(_run_branch, "recognizer_adult")
@@ -394,8 +444,10 @@ def workflow_recognizer(img_path):
     logger.info(f"  > Adult: {is_adult}, Violence: {is_viol}")
         
     # 3. Text Analysis
-    res_censor_out = dispatch("recognizer_censor", {"text": key_text}, is_workflow=True)
-    dispatch("recognizer_translate", {"text": key_text}, is_workflow=True)
+    res_censor_out, meta = dispatch("recognizer_censor", {"text": key_text}, is_workflow=True)
+    subtasks.append({'name': 'recognizer_censor', **meta})
+    _, meta = dispatch("recognizer_translate", {"text": key_text}, is_workflow=True)
+    subtasks.append({'name': 'recognizer_translate', **meta})
         
     key_censor = res_censor_out.get('illegal', [None])[0]
     is_censor = json.loads(redis_client.get(key_censor))
@@ -404,7 +456,8 @@ def workflow_recognizer(img_path):
     # 4. Decision & Mosaic
     if is_adult or is_viol or is_censor:
         logger.warning("!!! ILLEGAL DETECTED !!! Mosaic...")
-        mosaic_out = dispatch("recognizer_mosaic", {"img": img_key}, is_workflow=True)
+        mosaic_out, meta = dispatch("recognizer_mosaic", {"img": img_key}, is_workflow=True)
+        subtasks.append({'name': 'recognizer_mosaic', **meta})
         mosaic_keys = mosaic_out.get('mosaic_image', [])
         if mosaic_keys: 
             save_result(mosaic_keys[0], "mosaic_result.jpg")
@@ -421,17 +474,22 @@ def workflow_recognizer(img_path):
     save_result(report_key, "recognizer_report.json")
         
     logger.info("Recognizer Workflow Finished.")
+    return subtasks
        
 def workflow_svd():
     logger.info("=== Starting SVD Workflow ===")
     if not redis_client: 
         raise Exception("Redis not connected") # 修正1：主动抛错
 
-    start_out = dispatch("svd_start", {}, is_workflow=True)
+    subtasks = []  # 收集所有子任务元数据
+
+    start_out, meta = dispatch("svd_start", {}, is_workflow=True)
+    subtasks.append({'name': 'svd_start', **meta})
     matrix_keys = start_out.get('matrix', [])
         
     def _run_compute(m_key):
-        res = dispatch("svd_compute", {"matrix": m_key}, is_workflow=True)
+        res, meta = dispatch("svd_compute", {"matrix": m_key}, is_workflow=True)
+        subtasks.append({'name': 'svd_compute', **meta})
         return res.get('res', [None])[0]
             
     with ThreadPoolExecutor(max_workers=len(matrix_keys) or 1) as ex:
@@ -440,23 +498,29 @@ def workflow_svd():
         
     merge_input_key = f"sys-svd-list-{uuid.uuid4().hex}"
     redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(compute_results))
-    merge_out = dispatch("svd_merge", {"res": merge_input_key}, is_workflow=True)
+    merge_out, meta = dispatch("svd_merge", {"res": merge_input_key}, is_workflow=True)
+    subtasks.append({'name': 'svd_merge', **meta})
         
     res_keys = merge_out.get('final_res', [])
     if res_keys: save_result(res_keys[0], "svd_result.pkl")
     logger.info("SVD Workflow Finished.")
+    return subtasks
 
 def workflow_wordcount():
     logger.info("=== Starting WordCount Workflow ===")
     if not redis_client: 
         raise Exception("Redis not connected") # 修正1：主动抛错
 
-    start_out = dispatch("wordcount_start", {}, is_workflow=True)
+    subtasks = []  # 收集所有子任务元数据
+
+    start_out, meta = dispatch("wordcount_start", {}, is_workflow=True)
+    subtasks.append({'name': 'wordcount_start', **meta})
     file_keys = start_out.get('file', [])
-    if not file_keys: return
+    if not file_keys: return subtasks
 
     def _run_count(f_key):
-        res = dispatch("wordcount_count", {"file": f_key}, is_workflow=True)
+        res, meta = dispatch("wordcount_count", {"file": f_key}, is_workflow=True)
+        subtasks.append({'name': 'wordcount_count', **meta})
         return res.get('res', [None])[0]
         
     with ThreadPoolExecutor(max_workers=len(file_keys)) as ex:
@@ -465,36 +529,39 @@ def workflow_wordcount():
         
     merge_input_key = f"sys-wc-list-{uuid.uuid4().hex}"
     redis_client.set(merge_input_key, "LIST_REF:" + json.dumps(count_results))
-    merge_out = dispatch("wordcount_merge", {"res": merge_input_key}, is_workflow=True)
+    merge_out, meta = dispatch("wordcount_merge", {"res": merge_input_key}, is_workflow=True)
+    subtasks.append({'name': 'wordcount_merge', **meta})
         
     count_keys = merge_out.get('final_count', [])
     if count_keys: save_result(count_keys[0], "wordcount_result.txt")
     logger.info("WordCount Workflow Finished.")
+    return subtasks
 
 
-def update_task_status(task_id, status):
+def update_task_status(task_id, status, subtasks=None):
     with task_store_lock:
-        task_status_store[task_id] = status
+        task_status_store[task_id] = {"status": status, "subtasks": subtasks or []}
 
 def run_workflow_async(name, payload, task_id):
+    subtasks = []
     try:
         update_task_status(task_id, "running")
         
-        # 执行原有的逻辑
+        # 执行原有的逻辑并收集子任务元数据
         if name == "video":
-            workflow_video(payload)
+            subtasks = workflow_video(payload)
         elif name == "recognizer":
-            workflow_recognizer(payload)
+            subtasks = workflow_recognizer(payload)
         elif name == "svd":
-            workflow_svd()
+            subtasks = workflow_svd()
         elif name == "wordcount":
-            workflow_wordcount()
+            subtasks = workflow_wordcount()
             
-        update_task_status(task_id, "completed")
-        logger.info(f"Task {task_id} ({name}) completed.")
+        update_task_status(task_id, "completed", subtasks=subtasks)
+        logger.info(f"Task {task_id} ({name}) completed with {len(subtasks)} subtasks.")
     except Exception as e:
         logger.error(f"Task {task_id} failed: {e}")
-        update_task_status(task_id, "failed")
+        update_task_status(task_id, "failed", subtasks=subtasks)
 
 def clean_up():
     logger.info("Stopping all containers...")
@@ -517,7 +584,7 @@ def _get_or_create_manager(function_name):
             # 统一在这里配置镜像名、端口等参数
             function_managers[function_name] = FunctionManager(
                 function_name=function_name,
-                image_name='jywang_test',     # 统一配置
+                image_name='yyxie-test2',     # 统一配置
                 container_port=5000,          # 统一配置
                 host_storage_path=None, 
                 min_idle_containers=1
@@ -585,6 +652,270 @@ def dispatch_single(function_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# =========================================================================
+# 工作流子函数独立 REST 端点 (方案 A)
+# =========================================================================
+
+# --- Video Workflow Sub-functions ---
+@app.route('/dispatch/video_upload', methods=['POST'])
+def dispatch_video_upload():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('video_upload', payload, is_workflow=True)
+        # 将结果包装为与 dispatch_single 一致的格式
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/video_split', methods=['POST'])
+def dispatch_video_split():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('video_split', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/video_transcode', methods=['POST'])
+def dispatch_video_transcode():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('video_transcode', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/video_merge', methods=['POST'])
+def dispatch_video_merge():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('video_merge', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- Recognizer Workflow Sub-functions ---
+@app.route('/dispatch/recognizer_upload', methods=['POST'])
+def dispatch_recognizer_upload():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_upload', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_adult', methods=['POST'])
+def dispatch_recognizer_adult():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_adult', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_violence', methods=['POST'])
+def dispatch_recognizer_violence():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_violence', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_extract', methods=['POST'])
+def dispatch_recognizer_extract():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_extract', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_censor', methods=['POST'])
+def dispatch_recognizer_censor():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_censor', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_translate', methods=['POST'])
+def dispatch_recognizer_translate():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_translate', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/recognizer_mosaic', methods=['POST'])
+def dispatch_recognizer_mosaic():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('recognizer_mosaic', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- SVD Workflow Sub-functions ---
+@app.route('/dispatch/svd_start', methods=['POST'])
+def dispatch_svd_start():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('svd_start', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/svd_compute', methods=['POST'])
+def dispatch_svd_compute():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('svd_compute', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/svd_merge', methods=['POST'])
+def dispatch_svd_merge():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('svd_merge', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# --- WordCount Workflow Sub-functions ---
+@app.route('/dispatch/wordcount_start', methods=['POST'])
+def dispatch_wordcount_start():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('wordcount_start', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/wordcount_count', methods=['POST'])
+def dispatch_wordcount_count():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('wordcount_count', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/dispatch/wordcount_merge', methods=['POST'])
+def dispatch_wordcount_merge():
+    payload = request.get_json(silent=True) or {}
+    try:
+        result, meta = dispatch('wordcount_merge', payload, is_workflow=True)
+        if isinstance(result, dict):
+            output = dict(result)
+        else:
+            output = {"_value": result}
+        output.setdefault('__meta__', {})
+        output['__meta__'].update(meta)
+        return jsonify({"status": "success", "output": output}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/manager_status/<function_name>', methods=['GET'])
 def manager_status(function_name):
     with manager_lock:
@@ -601,13 +932,20 @@ def manager_status(function_name):
 # --- 新增：查询状态接口 ---432
 @app.route('/check_task/<task_id>', methods=['GET'])
 def check_task(task_id):
-    status = "unknown"
     with task_store_lock:
-        status = task_status_store.get(task_id, "unknown")
-    return jsonify({"task_id": task_id, "status": status}), 200
+        task_info = task_status_store.get(task_id, {"status": "unknown", "subtasks": []})
+    # 兼容旧格式（字符串）和新格式（字典）
+    if isinstance(task_info, str):
+        return jsonify({"task_id": task_id, "status": task_info, "subtasks": []}), 200
+    return jsonify({"task_id": task_id, "status": task_info.get("status", "unknown"), "subtasks": task_info.get("subtasks", [])}), 200
 
 atexit.register(clean_up)
 
 if __name__ == '__main__':
     os.makedirs(PERF_LOG_DIR, exist_ok=True)
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    # 支持通过环境变量改变监听地址与端口，方便多用户在同机运行
+    host = os.environ.get('CONTROLLER_HOST', '0.0.0.0')
+    port = int(os.environ.get('CONTROLLER_PORT', '5000'))
+    logger.info(f"Starting Controller on {host}:{port}")
+    logger.info(f"ENABLE_PERF={ENABLE_PERF} (set ENABLE_PERF=false to disable perf recording)")
+    app.run(host=host, port=port, threaded=True)

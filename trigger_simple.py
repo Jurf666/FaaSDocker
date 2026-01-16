@@ -4,7 +4,12 @@ import argparse
 import json
 
 # --- 全局配置 ---
-CONTROLLER_URL = 'http://localhost:5000'
+import os
+
+# Controller 地址可通过环境变量 `CONTROLLER_HOST`/`CONTROLLER_PORT` 覆盖
+controller_host = os.environ.get('CONTROLLER_HOST', 'localhost')
+controller_port = os.environ.get('CONTROLLER_PORT', '5000')
+CONTROLLER_URL = f'http://{controller_host}:{controller_port}'
 IMAGE_NAME = 'video-proxy:latest'  # 假设您的所有 Action 都在这个镜像里
 PROXY_CONTAINER_PORT = 5000
 
