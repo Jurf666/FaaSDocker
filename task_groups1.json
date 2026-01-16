@@ -17,7 +17,7 @@
   "recognizer_violence": 0,
   "svd_start": 0,
   "couchdb_test": 1,
-  "image": 1,
+  "image": 2,
   "video_split": 3,
   "video_transcode": 1,
   "markdown2html": 1,

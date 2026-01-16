@@ -6,3 +6,14 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# 一些结果
+closed_loop_results/
+comparison_results/
+
+# 本地调试代码
+compare_json_results.py
+docker-cleanup.sh
+setup-docker-auto-cleanup.sh
+README_COMPARE_JSON.md
+README_DOCKER_CLEANUP.md
