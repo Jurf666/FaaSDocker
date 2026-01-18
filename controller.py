@@ -945,7 +945,7 @@ if __name__ == '__main__':
     os.makedirs(PERF_LOG_DIR, exist_ok=True)
     # 支持通过环境变量改变监听地址与端口，方便多用户在同机运行
     host = os.environ.get('CONTROLLER_HOST', '0.0.0.0')
-    port = int(os.environ.get('CONTROLLER_PORT', '5000'))
+    port = int(os.environ.get('CONTROLLER_PORT', '5001'))
     logger.info(f"Starting Controller on {host}:{port}")
     logger.info(f"ENABLE_PERF={ENABLE_PERF} (set ENABLE_PERF=false to disable perf recording)")
     app.run(host=host, port=port, threaded=True)
