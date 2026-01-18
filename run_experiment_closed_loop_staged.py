@@ -54,6 +54,10 @@ REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
 redis_client = None
 
+# CouchDB 配置(用于清理工作流数据)
+COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0.1:5984/')
+couchdb_client = None
+
 # 全局cgroup配置字典, 将在main()中基于task_groups.json生成
 CGROUP_CONFIGS = {}
 # 全局函数到分组的映射, 用于快速查找函数属于哪个分组
@@ -100,6 +104,87 @@ def init_redis_client():
         redis_client = None
         print(f"[WARN] Redis not available, workflow cache warmup skipped: {e}")
     return redis_client
+
+
+def init_couchdb_client():
+    """初始化 CouchDB 连接, 用于清理工作流数据。"""
+    global couchdb_client
+    if couchdb_client:
+        return couchdb_client
+    try:
+        import couchdb
+        couch = couchdb.Server(COUCHDB_URL)
+        couchdb_client = couch
+        print(f"[INFO] Connected to CouchDB at {COUCHDB_URL}")
+    except Exception as e:
+        couchdb_client = None
+        print(f"[WARN] CouchDB not available, cleanup will skip CouchDB: {e}")
+    return couchdb_client
+
+
+def cleanup_workflow_data():
+    """清理 Redis 和 CouchDB 中的工作流中间数据"""
+    print("\n[INFO] === Cleaning up workflow data ===")
+    
+    # 清理 Redis 中的工作流键
+    if redis_client:
+        try:
+            patterns = [
+                'req-*', 'warmup-*', 'sys-*', 'const_target_*',
+                '*video*', '*recognizer*', '*svd*', '*wordcount*',
+                '*split*', '*transcode*', '*merge*', '*upload*',
+                '*adult*', '*violence*', '*extract*', '*censor*',
+                '*translate*', '*mosaic*', '*compute*', '*count*',
+                '*start*', '*res*', '*matrix*', '*file*', '*img*',
+                '*text*', '*illegal*', '*transcoded*', '*splited*',
+                '*mosaic_image*', '*final_*'
+            ]
+            
+            total_deleted = 0
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                if keys:
+                    deleted = redis_client.delete(*keys)
+                    total_deleted += deleted
+                    print(f"[INFO] Deleted {deleted} Redis keys matching '{pattern}'")
+            
+            print(f"[INFO] Total Redis keys deleted: {total_deleted}")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup Redis: {e}")
+    else:
+        print("[WARN] Redis client not initialized, skipping Redis cleanup")
+    
+    # 清理 CouchDB 中的工作流数据
+    if init_couchdb_client():
+        try:
+            db = couchdb_client['faas_data']
+            docs_to_delete = []
+            
+            for doc_id in db:
+                if not doc_id.startswith('_design'):
+                    doc = db[doc_id]
+                    docs_to_delete.append({'_id': doc_id, '_rev': doc['_rev'], '_deleted': True})
+            
+            if docs_to_delete:
+                db.update(docs_to_delete)
+                print(f"[INFO] Deleted {len(docs_to_delete)} documents from CouchDB faas_data")
+                
+                # 触发压缩以回收磁盘空间
+                try:
+                    import requests
+                    requests.post(f"{COUCHDB_URL}faas_data/_compact", 
+                                auth=('openwhisk', 'openwhisk'))
+                    print(f"[INFO] Triggered CouchDB compaction for faas_data")
+                except Exception:
+                    pass
+            else:
+                print(f"[INFO] No documents to delete from CouchDB")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup CouchDB: {e}")
+    else:
+        print("[WARN] CouchDB client not initialized, skipping CouchDB cleanup")
+    
+    print("[INFO] === Cleanup completed ===")
 
 
 def first_item(val):
@@ -762,6 +847,9 @@ def main():
         json.dump(output, f, indent=2)
 
     print(f"\n[INFO] Results saved to {output_file}")
+    
+    # 清理工作流数据
+    cleanup_workflow_data()
 
 
 if __name__ == '__main__':

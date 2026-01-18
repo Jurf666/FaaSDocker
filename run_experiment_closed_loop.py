@@ -32,18 +32,22 @@ controller_port = os.environ.get('CONTROLLER_PORT', '5000')
 CONTROLLER_URL = f"http://{controller_host}:{controller_port}"
 
 # 配置参数
-TEST_DURATION = int(os.environ.get('TEST_DURATION', '600'))        # 实验时长(秒)
+TEST_DURATION = int(os.environ.get('TEST_DURATION', '300'))        # 实验时长(秒)
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))             # 随机种子
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))                  # NUMA节点号
 
 # Cgroup 配置
 CGROUP_PARENT = '/sys/fs/cgroup/user_experiments'
-TASK_GROUPS_FILE = 'task_groups.json'
+TASK_GROUPS_FILE = 'baseline_groups.json'
 
 # Redis 配置(用于预热工作流缓存)
 REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
 redis_client = None
+
+# CouchDB 配置(用于清理工作流中间数据)
+COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0.1:5984/')
+couchdb_client = None
 
 # 全局cgroup配置字典, 将在main()中基于task_groups.json生成
 CGROUP_CONFIGS = {}
@@ -88,6 +92,87 @@ def init_redis_client():
         redis_client = None
         print(f"[WARN] Redis not available, workflow cache warmup skipped: {e}")
     return redis_client
+
+
+def init_couchdb_client():
+    """初始化 CouchDB 连接, 用于清理工作流中间数据。"""
+    global couchdb_client
+    if couchdb_client:
+        return couchdb_client
+    try:
+        import couchdb
+        couchdb_client = couchdb.Server(COUCHDB_URL)
+        print(f"[INFO] Connected to CouchDB at {COUCHDB_URL}")
+    except Exception as e:
+        couchdb_client = None
+        print(f"[WARN] CouchDB not available, cleanup may be incomplete: {e}")
+    return couchdb_client
+
+
+def cleanup_workflow_data():
+    """清理工作流产生的中间数据（Redis + CouchDB）"""
+    print("\n[INFO] === Cleaning up workflow intermediate data ===")
+    
+    # 1. 清理 Redis 中的工作流相关 key
+    if redis_client:
+        try:
+            # 获取所有 key 并过滤出工作流相关的
+            all_keys = redis_client.keys('*')
+            workflow_patterns = [
+                'req-*', 'warmup-*', 'sys-*', 'const_target_*',
+                '*video*', '*recognizer*', '*svd*', '*wordcount*',
+                '*split*', '*transcode*', '*merge*', '*upload*',
+                '*adult*', '*violence*', '*extract*', '*censor*',
+                '*translate*', '*mosaic*', '*compute*', '*count*'
+            ]
+            
+            keys_to_delete = []
+            for key in all_keys:
+                # 检查是否匹配工作流模式
+                for pattern in workflow_patterns:
+                    import fnmatch
+                    if fnmatch.fnmatch(key, pattern):
+                        keys_to_delete.append(key)
+                        break
+            
+            if keys_to_delete:
+                # 批量删除
+                deleted = redis_client.delete(*keys_to_delete)
+                print(f"[INFO] Deleted {deleted} workflow keys from Redis")
+            else:
+                print(f"[INFO] No workflow keys found in Redis (total keys: {len(all_keys)})")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup Redis: {e}")
+    
+    # 2. 清理 CouchDB 中的 faas_data 数据库
+    if init_couchdb_client():
+        try:
+            import couchdb
+            if 'faas_data' in couchdb_client:
+                db = couchdb_client['faas_data']
+                doc_count = 0
+                docs_to_delete = []
+                
+                # 收集所有文档
+                for doc_id in db:
+                    # 跳过设计文档
+                    if not doc_id.startswith('_'):
+                        doc = db[doc_id]
+                        docs_to_delete.append({'_id': doc_id, '_rev': doc['_rev'], '_deleted': True})
+                        doc_count += 1
+                
+                # 批量删除
+                if docs_to_delete:
+                    db.update(docs_to_delete)
+                    print(f"[INFO] Deleted {doc_count} documents from CouchDB faas_data database")
+                else:
+                    print(f"[INFO] No documents found in CouchDB faas_data database")
+            else:
+                print(f"[INFO] CouchDB faas_data database does not exist, nothing to clean")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup CouchDB: {e}")
+    
+    print("[INFO] === Cleanup completed ===")
 
 
 def first_item(val):
@@ -723,6 +808,9 @@ def main():
         json.dump(output, f, indent=2)
 
     print(f"\n[INFO] Results saved to {output_file}")
+    
+    # 清理工作流产生的中间数据，防止磁盘占用不断增长
+    cleanup_workflow_data()
 
 
 if __name__ == '__main__':
