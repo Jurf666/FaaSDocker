@@ -14,6 +14,8 @@ TEST_DURATION: 实验时长秒(默认60)
 NUMA_NODE: NUMA节点号(默认0, 用于选择CPU范围)
 RANDOM_SEED: 随机种子(默认42)
 """
+import psutil # 新增
+import csv    # 新增
 import requests
 import time
 import json
@@ -32,7 +34,7 @@ controller_port = os.environ.get('CONTROLLER_PORT', '5001')
 CONTROLLER_URL = f"http://{controller_host}:{controller_port}"
 
 # 配置参数
-TEST_DURATION = int(os.environ.get('TEST_DURATION', '1200'))        # 实验时长(秒)
+TEST_DURATION = int(os.environ.get('TEST_DURATION', '300'))        # 实验时长(秒)
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))             # 随机种子
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))                  # NUMA节点号
 
@@ -638,6 +640,198 @@ def compute_stability(times):
         "p95": float(np.percentile(arr, 95))
     }
 
+"""
+def monitor_cpu_usage(stop_event, cgroup_configs, filename="cpu_metrics.csv"):
+    #后台线程：每秒记录一次被分配核心的 CPU 使用率
+    print(f"[MONITOR] Starting CPU monitor via psutil, saving to {filename}...")
+    
+    # 1. 解析需要监控的核心 ID 及其所属分组
+    # 结构: { cpu_id: "group_0", ... }
+    target_cpus_map = {}
+    for group_name, config in cgroup_configs.items():
+        if 'cpus' in config:
+            # config['cpus'] 是类似 "0,64" 的字符串
+            cpu_ids = [int(x) for x in config['cpus'].split(',') if x.strip()]
+            for cid in cpu_ids:
+                target_cpus_map[cid] = group_name
+
+    target_cpu_list = sorted(target_cpus_map.keys())
+    
+    # 2. 初始化 CSV
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        # 表头: Timestamp, CPU_0(group_0), CPU_64(group_0), ...
+        headers = ["timestamp"] + [f"CPU_{cid}({target_cpus_map[cid]})" for cid in target_cpu_list]
+        writer.writerow(headers)
+        
+        # 3. 循环记录
+        while not stop_event.is_set():
+            try:
+                # 获取当前所有核的使用率 (interval=1 表示阻塞1秒统计一次)
+                # 注意：这会阻塞线程1秒，正好作为采样间隔
+                all_cpus_percent = psutil.cpu_percent(interval=1, percpu=True)
+                
+                row = [time.time()]
+                for cid in target_cpu_list:
+                    # 防止越界（比如 allocated 了核64，但机器只有 32 核的虚拟环境）
+                    if cid < len(all_cpus_percent):
+                        row.append(all_cpus_percent[cid])
+                    else:
+                        row.append(-1) # 标记无效核
+                
+                writer.writerow(row)
+                f.flush() # 实时刷入磁盘
+            except Exception as e:
+                print(f"[MONITOR] Error: {e}")
+                break
+    print(f"[MONITOR] Monitoring stopped.")
+"""
+ 
+def find_procs_by_name(name_keyword):
+    """辅助函数：根据名字查找进程对象"""
+    procs = []
+    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            if name_keyword in p.info['name'] or \
+               (p.info['cmdline'] and any(name_keyword in s for s in p.info['cmdline'])):
+                procs.append(p)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return procs
+
+def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimized.csv", target_disk="sda"):
+    print(f"[MONITOR] Starting OPTIMIZED monitor (Disk={target_disk}), saving to {filename}...")
+    
+    # --- 1. 优化 CPU 列排序 (同组紧邻) ---
+    # 结构: [ (cpu_id, group_name), ... ]
+    ordered_cpu_list = []
+    
+    # 按 group_name 排序 (确保 group_0 的核都在一起，group_1 的核都在一起...)
+    # 假设 group_name 格式为 "group_0", "group_1" 等，直接字符串排序即可
+    sorted_groups = sorted(cgroup_configs.keys(), key=lambda x: int(x.split('_')[1]) if '_' in x else x)
+    
+    for group_name in sorted_groups:
+        config = cgroup_configs[group_name]
+        if 'cpus' in config:
+            # 解析该组的所有 CPU ID
+            cpu_ids = [int(x) for x in config['cpus'].split(',') if x.strip()]
+            # 保持配置中的顺序 (通常是 0,64 这样成对的)，或者再次排序
+            # 这里我们按配置文件里的顺序保留，因为 generate_cgroups 已经按物理对端配对了
+            for cid in cpu_ids:
+                ordered_cpu_list.append((cid, group_name))
+    
+    # --- 2. 查找 Controller 进程 ---
+    controller_proc = None
+    py_procs = find_procs_by_name("controller.py")
+    if py_procs:
+        controller_proc = py_procs[0]
+        print(f"[MONITOR] Found Controller PID: {controller_proc.pid}")
+    else:
+        print("[MONITOR] Controller process not found.")
+
+    # --- 3. 初始化 CSV ---
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        
+        # 构建表头
+        headers = ["timestamp"]
+        
+        # A. CPU 列 (按分组排列)
+        for cid, gname in ordered_cpu_list:
+            headers.append(f"CPU_{cid}({gname})")
+            
+        # B. 磁盘列 (sda)
+        headers.extend([
+            f"{target_disk}_Read_MB/s", 
+            f"{target_disk}_Write_MB/s", 
+            f"{target_disk}_%util"  # 新增
+        ])
+        
+        # C. Controller CPU
+        headers.append("Controller_CPU%")
+        
+        writer.writerow(headers)
+        
+        # --- 4. 初始化计数器 ---
+        # 磁盘
+        try:
+            # perdisk=True 返回字典 {device_name: sdiskio(...)}
+            # Linux 下 sdiskio 包含 read_time, write_time, busy_time 等
+            last_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
+        except Exception:
+            last_disk_stats = None
+
+        if last_disk_stats is None:
+            print(f"[WARN] Target disk '{target_disk}' not found! Disk metrics will be 0.")
+
+        last_time = time.time()
+
+        # --- 5. 循环采样 ---
+        while not stop_event.is_set():
+            try:
+                # 控制采样间隔 (约1秒)
+                current_time = time.time()
+                time_delta = current_time - last_time
+                if time_delta < 1.0:
+                    time.sleep(1.0 - time_delta)
+                    current_time = time.time()
+                    time_delta = current_time - last_time
+                
+                row = [current_time]
+                
+                # --- A. 获取 CPU 数据 ---
+                # 获取所有核的数据
+                all_cpus = psutil.cpu_percent(interval=None, percpu=True)
+                # 按 ordered_cpu_list 的顺序填充
+                for cid, _ in ordered_cpu_list:
+                    if cid < len(all_cpus):
+                        row.append(all_cpus[cid])
+                    else:
+                        row.append(-1)
+                
+                # --- B. 获取磁盘数据 (%util 计算) ---
+                curr_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
+                
+                if curr_disk_stats and last_disk_stats:
+                    # 读写速率 (MB/s)
+                    read_mb = (curr_disk_stats.read_bytes - last_disk_stats.read_bytes) / 1024 / 1024 / time_delta
+                    write_mb = (curr_disk_stats.write_bytes - last_disk_stats.write_bytes) / 1024 / 1024 / time_delta
+                    
+                    # %util 计算
+                    # busy_time 是毫秒，表示花费在 I/O 上的时间
+                    # 如果 busy_time 增加了 1000ms，说明这一秒一直忙，利用率 100%
+                    busy_delta = curr_disk_stats.busy_time - last_disk_stats.busy_time
+                    # 转换为秒
+                    busy_seconds = busy_delta / 1000.0
+                    util_percent = (busy_seconds / time_delta) * 100.0
+                    # 修正可能的溢出 (比如多核并行IO导致 busy_time > real_time，虽然 %util 定义通常不超过100，但在某些统计下可能)
+                    # 不过通常我们只关心是否饱和，超过100也说明饱和
+                    util_percent = max(0.0, util_percent) 
+                    
+                    row.extend([f"{read_mb:.2f}", f"{write_mb:.2f}", f"{util_percent:.2f}"])
+                else:
+                    row.extend([0, 0, 0])
+                
+                last_disk_stats = curr_disk_stats
+
+                # --- C. Controller CPU ---
+                ctrl_cpu = 0
+                if controller_proc:
+                    try:
+                        # 仅获取 CPU，不获取 IO
+                        ctrl_cpu = controller_proc.cpu_percent(interval=None)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        controller_proc = None # 进程可能挂了
+                row.append(f"{ctrl_cpu:.1f}")
+
+                writer.writerow(row)
+                f.flush()
+                last_time = current_time
+                
+            except Exception as e:
+                print(f"[MONITOR] Error: {e}")
+                break
+    print("[MONITOR] Monitoring stopped.")
 
 def main():
     global CGROUP_CONFIGS, FUNC_TO_GROUP
@@ -742,6 +936,19 @@ def main():
     
     # 创建并启动客户端线程(固定时长, 每函数一个client)
     print(f"\n[INFO] Starting {num_clients} client threads (closed-loop, fixed duration {TEST_DURATION}s)...")
+    
+    import threading
+    monitor_stop_event = threading.Event()
+    # 使用新的 monitor_system_full 函数
+    monitor_thread = threading.Thread(
+        target=monitor_system,  # 使用新的 v3 函数
+        # 参数: event, cgroup配置, 文件名, 目标磁盘
+        args=(monitor_stop_event, CGROUP_CONFIGS, "system_metrics.csv", "sda")
+    )
+    monitor_thread.daemon = True
+    monitor_thread.start()
+
+    print(f"\n[INFO] Starting {num_clients} client threads...")
     start_experiment = time.time()
     end_experiment_deadline = start_experiment + TEST_DURATION
     
@@ -754,7 +961,10 @@ def main():
     
     for future in as_completed(client_futures):
         future.result()
+
     executor.shutdown(wait=True)
+    monitor_stop_event.set() # 通知监控线程停止
+    monitor_thread.join()    # 等待监控线程结束
     
     end_experiment = time.time()
     total_time = end_experiment - start_experiment
