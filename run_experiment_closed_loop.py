@@ -28,13 +28,15 @@ import redis
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import shutil
+import signal
 
 controller_host = os.environ.get('CONTROLLER_HOST', 'localhost')
 controller_port = os.environ.get('CONTROLLER_PORT', '5001')
 CONTROLLER_URL = f"http://{controller_host}:{controller_port}"
 
 # 配置参数
-TEST_DURATION = int(os.environ.get('TEST_DURATION', '300'))        # 实验时长(秒)
+TEST_DURATION = int(os.environ.get('TEST_DURATION', '1200'))        # 实验时长(秒)
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))             # 随机种子
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))                  # NUMA节点号
 
@@ -67,7 +69,7 @@ SIMPLE_ACTIONS = {
     "network":         {"name": "10mb"},
     "markdown2html":   {},
     "map_reduce":      {},
-    "disk":            {"bs": "1M", "count": 1000},
+    "disk":            {"bs": "1M", "count": 100},
     "couchdb_test":    {},
 }
 
@@ -183,36 +185,97 @@ def first_item(val):
         return val[0]
     return val
 
+def force_delete_cgroup(cgroup_path):
+    """
+    强制删除一个 Cgroup 目录：
+    1. 杀掉里面的所有进程
+    2. 如果当前进程在里面，将当前进程移出
+    3. 删除目录
+    """
+    if not os.path.exists(cgroup_path):
+        return
+
+    # 1. 读取里面的 PIDs
+    procs_file = os.path.join(cgroup_path, 'cgroup.procs')
+    try:
+        with open(procs_file, 'r') as f:
+            pids = f.read().split()
+    except Exception:
+        pids = []
+
+    current_pid = str(os.getpid())
+
+    # 2. 处理进程
+    for pid in pids:
+        pid = pid.strip()
+        if not pid: continue
+
+        if pid == current_pid:
+            # === 情况A: 当前脚本自己在里面，必须先“逃生” ===
+            # 将自己移动到根 cgroup 或者父 cgroup
+            escape_path = "/sys/fs/cgroup/cgroup.procs" 
+            try:
+                with open(escape_path, 'w') as f:
+                    f.write(pid)
+                print(f"[CLEANUP] Moved self (PID {pid}) out of {cgroup_path} to root.")
+            except Exception as e:
+                print(f"[ERROR] Failed to move self out of cgroup: {e}")
+        else:
+            # === 情况B: 其它残留进程，杀无赦 ===
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+                print(f"[CLEANUP] Killed lingering PID {pid} in {cgroup_path}")
+            except ProcessLookupError:
+                pass # 进程可能已经没了
+            except Exception as e:
+                print(f"[WARN] Failed to kill PID {pid}: {e}")
+
+    # 3. 给操作系统一点时间回收进程
+    time.sleep(0.2) 
+
+    # 4. 尝试删除目录 (带有重试机制)
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            os.rmdir(cgroup_path)
+            print(f"[CLEANUP] Successfully removed {cgroup_path}")
+            return
+        except OSError as e:
+            if "Device or resource busy" in str(e):
+                # 可能还有顽固进程，或者有子目录没删干净
+                time.sleep(0.5)
+                # 再次尝试杀进程（防止有新生成的或者没杀掉的）
+                if i < max_retries - 1:
+                    continue 
+            print(f"[WARN] Attempt {i+1} failed to remove {cgroup_path}: {e}")
+
+def cleanup_previous_cgroups():
+    """遍历清理所有实验相关的 Cgroup"""
+    if os.path.exists(CGROUP_PARENT):
+        print("[INFO] Cleaning up previous cgroups...")
+        # 遍历父目录下的所有子目录 (group_0, group_1, ...)
+        subdirs = [os.path.join(CGROUP_PARENT, d) for d in os.listdir(CGROUP_PARENT)]
+        
+        for subdir in subdirs:
+            if os.path.isdir(subdir) and "group_" in subdir:
+                force_delete_cgroup(subdir)
+        
+        # 可选：如果你想连父目录也删掉 (通常不需要，除非你想重置 user_experiments)
+        # force_delete_cgroup(CGROUP_PARENT)
+
 
 def ensure_cgroup(cgroup_path, cpus, mems):
-    """创建 cgroup 并配置 cpuset"""
+    """创建 cgroup 并配置 cpuset (修正版：只配置子组)"""
     try:
-        if not os.path.exists(CGROUP_PARENT):
-            os.makedirs(CGROUP_PARENT, exist_ok=True)
-        
-        parent_cpus = os.path.join(CGROUP_PARENT, 'cpuset.cpus')
-        parent_mems = os.path.join(CGROUP_PARENT, 'cpuset.mems')
-        try:
-            with open(parent_cpus, 'w') as f:
-                f.write(cpus)
-        except Exception:
-            pass
-        try:
-            with open(parent_mems, 'w') as f:
-                f.write(mems)
-        except Exception:
-            pass
-        
-        subtree = os.path.join(CGROUP_PARENT, 'cgroup.subtree_control')
-        try:
-            with open(subtree, 'r+') as f:
-                txt = f.read()
-                if '+cpuset' not in txt:
-                    f.write('+cpuset')
-        except Exception:
-            os.system(f"echo +cpuset | sudo tee {subtree} > /dev/null")
-        
+        # 1. 确保目录存在
         os.makedirs(cgroup_path, exist_ok=True)
+        
+        # 2. 启用 cpuset 控制器 (如果需要)
+        # 注意：通常需要在 user_experiments 这一层开启 subtree_control，
+        # 但这通常只需要做一次。这里保留之前的逻辑也可，只要不改 parent 的 cpus 即可。
+        # 为保险起见，建议把 subtree_control 的逻辑移到外面，或者仅检查不写入
+        
+        # 3. 配置子组的 CPUs 和 Mems
         child_cpus = os.path.join(cgroup_path, 'cpuset.cpus')
         child_mems = os.path.join(cgroup_path, 'cpuset.mems')
         
@@ -221,16 +284,44 @@ def ensure_cgroup(cgroup_path, cpus, mems):
         with open(child_mems, 'w') as f:
             f.write(mems)
         
+        # 4. 初始化 procs 文件
         procs = os.path.join(cgroup_path, 'cgroup.procs')
         if not os.path.exists(procs):
             open(procs, 'w').close()
-        
-        print(f"[INFO] Created cgroup: {cgroup_path} (CPUs: {cpus})")
+            
+        print(f"[INFO] Configured cgroup: {cgroup_path} (CPUs: {cpus})")
         return True
     except Exception as e:
-        print(f"[ERROR] Failed to create cgroup {cgroup_path}: {e}")
+        print(f"[ERROR] Failed to configure cgroup {cgroup_path}: {e}")
         return False
 
+def init_parent_cgroup(numa_node):
+    """初始化父 cgroup，授予所有权限"""
+    if not os.path.exists(CGROUP_PARENT):
+        os.makedirs(CGROUP_PARENT, exist_ok=True)
+    
+    # 启用子树控制
+    subtree = os.path.join(CGROUP_PARENT, 'cgroup.subtree_control')
+    try:
+        with open(subtree, 'r+') as f:
+            if '+cpuset' not in f.read():
+                f.write('+cpuset')
+    except Exception:
+        pass # 可能已经启用了
+        
+    # === 关键：给父组分配足够大的 CPU 范围 ===
+    parent_cpus = os.path.join(CGROUP_PARENT, 'cpuset.cpus')
+    parent_mems = os.path.join(CGROUP_PARENT, 'cpuset.mems')
+    
+    try:
+        with open(parent_cpus, 'w') as f:
+            # 这里的范围必须覆盖所有子组需要的 CPU
+            f.write("0-127") 
+        with open(parent_mems, 'w') as f:
+            f.write(str(numa_node))
+        print("[INFO] Parent cgroup initialized with broad CPU range.")
+    except Exception as e:
+        print(f"[WARN] Failed to init parent cgroup: {e}")
 
 def get_cgroup_for_function(func_name):
     """根据函数名获取对应的 cgroup 配置"""
@@ -312,9 +403,22 @@ def dispatch_simple(func_name, payload, request_id):
             cgroup_config = get_cgroup_for_function(func_name)
             write_pid_to_cgroup(pid, cgroup_config['path'])
         
-        if duration is not None:
+        # 检查 duration 是否有效，且 output 不包含错误信息
+        is_valid_duration = (duration is not None) and (duration > 0)
+        
+        # 检查是否返回了错误信息 (Proxy 抛异常时通常返回 {"error": ...})
+        has_error = False
+        if isinstance(out, dict) and 'error' in out:
+            has_error = True
+            print(f"[WARN] Request {request_id} failed with error: {out['error']}")
+
+        if is_valid_duration and not has_error:
             with data_lock:
                 perf_data[func_name].append(duration)
+        else:
+            # 可选：记录一下被丢弃的数据，方便调试
+            if duration == 0 or duration is None:
+                print(f"[FILTER] Ignored invalid duration {duration} for {func_name}")
         
         end_time = time.time()
         latency = end_time - start_time
@@ -589,11 +693,23 @@ def generate_cgroups_from_task_groups(task_groups_file, numa_node, cgroup_parent
         # 每个函数在该分组中贡献 2 个 client
         total_clients = len(funcs_in_group) * 2
         
+        """
         # 计算所需CPU核数：ceil(total_clients / 5), 然后向上取到最近的偶数
         cpus_needed = math.ceil(total_clients / 5.0)
         # 向上取到最近的偶数：如果已经是偶数就保持, 否则加1
         if cpus_needed % 2 != 0:
             cpus_needed += 1
+        """
+        is_baseline = (len(groups) == 1) or ('baseline' in task_groups_file)
+        
+        if is_baseline:
+            print(f"[INFO] Baseline Detected (Group {group_id}): Allocating ALL {len(all_cpus)} CPUs to reduce contention.")
+            cpus_needed = len(all_cpus) # 直接给满 64 个核 (假设 NUMA 0)
+        else:
+            # 原有逻辑：仅对非 Baseline 的分组实验进行严苛的资源隔离
+            cpus_needed = math.ceil(total_clients / 5.0)
+            if cpus_needed % 2 != 0:
+                cpus_needed += 1
         
         # 分配CPU
         cpus_list = []
@@ -687,6 +803,28 @@ def monitor_cpu_usage(stop_event, cgroup_configs, filename="cpu_metrics.csv"):
     print(f"[MONITOR] Monitoring stopped.")
 """
  
+# --- 新增辅助函数：直接从内核读取磁盘加权时间 ---
+def get_disk_weighted_time(target_disk):
+    """
+    读取 /proc/diskstats 获取指定磁盘的 weighted_time_spent_doing_io (ms)。
+    这是计算 aqu-sz 的必要原始数据，psutil 通常不提供。
+    """
+    try:
+        with open('/proc/diskstats', 'r') as f:
+            for line in f:
+                parts = line.split()
+                # /proc/diskstats 格式通常为:
+                # major minor name ... (从第4列开始是统计数据)
+                # 0:reads, 1:merged, 2:sectors, 3:time_reading,
+                # 4:writes, 5:merged, 6:sectors, 7:time_writing,
+                # 8:inflight, 9:io_ticks(busy_time), 10:time_in_queue(weighted_time)
+                if len(parts) >= 14 and parts[2] == target_disk:
+                    # 返回第 14 列 (索引 13)，即 weighted time
+                    return int(parts[13])
+    except Exception:
+        pass
+    return 0
+
 def find_procs_by_name(name_keyword):
     """辅助函数：根据名字查找进程对象"""
     procs = []
@@ -699,28 +837,21 @@ def find_procs_by_name(name_keyword):
             pass
     return procs
 
-def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimized.csv", target_disk="sda"):
-    print(f"[MONITOR] Starting OPTIMIZED monitor (Disk={target_disk}), saving to {filename}...")
+def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv", target_disk="sda"):
+    print(f"[MONITOR] Starting monitor (w_await, aqu-sz), saving to {filename}...")
     
-    # --- 1. 优化 CPU 列排序 (同组紧邻) ---
-    # 结构: [ (cpu_id, group_name), ... ]
+    # 1. 优化 CPU 列排序 (同组紧邻)
     ordered_cpu_list = []
-    
-    # 按 group_name 排序 (确保 group_0 的核都在一起，group_1 的核都在一起...)
-    # 假设 group_name 格式为 "group_0", "group_1" 等，直接字符串排序即可
     sorted_groups = sorted(cgroup_configs.keys(), key=lambda x: int(x.split('_')[1]) if '_' in x else x)
     
     for group_name in sorted_groups:
         config = cgroup_configs[group_name]
         if 'cpus' in config:
-            # 解析该组的所有 CPU ID
             cpu_ids = [int(x) for x in config['cpus'].split(',') if x.strip()]
-            # 保持配置中的顺序 (通常是 0,64 这样成对的)，或者再次排序
-            # 这里我们按配置文件里的顺序保留，因为 generate_cgroups 已经按物理对端配对了
             for cid in cpu_ids:
                 ordered_cpu_list.append((cid, group_name))
     
-    # --- 2. 查找 Controller 进程 ---
+    # 2. 查找 Controller 进程
     controller_proc = None
     py_procs = find_procs_by_name("controller.py")
     if py_procs:
@@ -729,22 +860,23 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimize
     else:
         print("[MONITOR] Controller process not found.")
 
-    # --- 3. 初始化 CSV ---
+    # 3. 初始化 CSV
     with open(filename, 'w', newline='') as f:
         writer = csv.writer(f)
         
-        # 构建表头
+        # --- 构建表头 ---
         headers = ["timestamp"]
         
-        # A. CPU 列 (按分组排列)
+        # A. CPU 列
         for cid, gname in ordered_cpu_list:
             headers.append(f"CPU_{cid}({gname})")
             
-        # B. 磁盘列 (sda)
+        # B. 磁盘列 (已移除 Read，新增 w_await, aqu-sz)
         headers.extend([
-            f"{target_disk}_Read_MB/s", 
             f"{target_disk}_Write_MB/s", 
-            f"{target_disk}_%util"  # 新增
+            f"{target_disk}_w_await",  # 新增: 平均写等待时间
+            f"{target_disk}_aqu-sz",   # 新增: 平均队列长度
+            f"{target_disk}_%util"
         ])
         
         # C. Controller CPU
@@ -753,13 +885,14 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimize
         writer.writerow(headers)
         
         # --- 4. 初始化计数器 ---
-        # 磁盘
+        # Psutil 计数器 (用于 Write MB/s, w_await, %util)
         try:
-            # perdisk=True 返回字典 {device_name: sdiskio(...)}
-            # Linux 下 sdiskio 包含 read_time, write_time, busy_time 等
             last_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
         except Exception:
             last_disk_stats = None
+
+        # 内核原始计数器 (用于 aqu-sz)
+        last_weighted_time = get_disk_weighted_time(target_disk)
 
         if last_disk_stats is None:
             print(f"[WARN] Target disk '{target_disk}' not found! Disk metrics will be 0.")
@@ -769,7 +902,7 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimize
         # --- 5. 循环采样 ---
         while not stop_event.is_set():
             try:
-                # 控制采样间隔 (约1秒)
+                # 采样间隔控制
                 current_time = time.time()
                 time_delta = current_time - last_time
                 if time_delta < 1.0:
@@ -779,49 +912,65 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimize
                 
                 row = [current_time]
                 
-                # --- A. 获取 CPU 数据 ---
-                # 获取所有核的数据
+                # A. 获取 CPU 数据
                 all_cpus = psutil.cpu_percent(interval=None, percpu=True)
-                # 按 ordered_cpu_list 的顺序填充
                 for cid, _ in ordered_cpu_list:
                     if cid < len(all_cpus):
                         row.append(all_cpus[cid])
                     else:
                         row.append(-1)
                 
-                # --- B. 获取磁盘数据 (%util 计算) ---
+                # B. 获取磁盘数据
                 curr_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
+                curr_weighted_time = get_disk_weighted_time(target_disk)
                 
                 if curr_disk_stats and last_disk_stats:
-                    # 读写速率 (MB/s)
-                    read_mb = (curr_disk_stats.read_bytes - last_disk_stats.read_bytes) / 1024 / 1024 / time_delta
+                    # 1. Write MB/s
                     write_mb = (curr_disk_stats.write_bytes - last_disk_stats.write_bytes) / 1024 / 1024 / time_delta
                     
-                    # %util 计算
-                    # busy_time 是毫秒，表示花费在 I/O 上的时间
-                    # 如果 busy_time 增加了 1000ms，说明这一秒一直忙，利用率 100%
-                    busy_delta = curr_disk_stats.busy_time - last_disk_stats.busy_time
-                    # 转换为秒
-                    busy_seconds = busy_delta / 1000.0
-                    util_percent = (busy_seconds / time_delta) * 100.0
-                    # 修正可能的溢出 (比如多核并行IO导致 busy_time > real_time，虽然 %util 定义通常不超过100，但在某些统计下可能)
-                    # 不过通常我们只关心是否饱和，超过100也说明饱和
-                    util_percent = max(0.0, util_percent) 
+                    # 2. w_await Calculation
+                    # w_await = (Delta Write Time) / (Delta Write Count)
+                    delta_w_time = curr_disk_stats.write_time - last_disk_stats.write_time
+                    delta_w_count = curr_disk_stats.write_count - last_disk_stats.write_count
+                    if delta_w_count > 0:
+                        w_await = delta_w_time / delta_w_count
+                    else:
+                        w_await = 0.0
                     
-                    row.extend([f"{read_mb:.2f}", f"{write_mb:.2f}", f"{util_percent:.2f}"])
+                    # 3. aqu-sz Calculation
+                    # aqu-sz = (Delta Weighted Time in ms) / (Delta Time in ms)
+                    delta_weighted = curr_weighted_time - last_weighted_time
+                    delta_time_ms = time_delta * 1000.0
+                    if delta_time_ms > 0:
+                        aqu_sz = delta_weighted / delta_time_ms
+                    else:
+                        aqu_sz = 0.0
+                    
+                    # 4. %util Calculation
+                    delta_busy = curr_disk_stats.busy_time - last_disk_stats.busy_time
+                    util_percent = (delta_busy / delta_time_ms) * 100.0
+                    util_percent = max(0.0, min(100.0, util_percent)) # 限制在 0-100
+                    
+                    row.extend([
+                        f"{write_mb:.2f}", 
+                        f"{w_await:.2f}", 
+                        f"{aqu_sz:.2f}", 
+                        f"{util_percent:.2f}"
+                    ])
                 else:
-                    row.extend([0, 0, 0])
+                    row.extend([0, 0, 0, 0])
                 
+                # 更新计数器
                 last_disk_stats = curr_disk_stats
+                last_weighted_time = curr_weighted_time
 
-                # --- C. Controller CPU ---
+                # C. Controller CPU
                 ctrl_cpu = 0
                 if controller_proc:
                     try:
-                        # 仅获取 CPU，不获取 IO
                         ctrl_cpu = controller_proc.cpu_percent(interval=None)
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        controller_proc = None # 进程可能挂了
+                        controller_proc = None
                 row.append(f"{ctrl_cpu:.1f}")
 
                 writer.writerow(row)
@@ -832,7 +981,7 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metrics_optimize
                 print(f"[MONITOR] Error: {e}")
                 break
     print("[MONITOR] Monitoring stopped.")
-
+    
 def main():
     global CGROUP_CONFIGS, FUNC_TO_GROUP
     
@@ -846,6 +995,12 @@ def main():
     print(f"[INFO] Generating cgroup configurations from {TASK_GROUPS_FILE}...")
     CGROUP_CONFIGS = generate_cgroups_from_task_groups(TASK_GROUPS_FILE, NUMA_NODE, CGROUP_PARENT)
     
+    cleanup_previous_cgroups()
+    
+    # === 新增：先初始化父组 ===
+    init_parent_cgroup(NUMA_NODE) 
+    # ========================
+    
     # 构建函数到分组的映射
     for group_name, group_config in CGROUP_CONFIGS.items():
         if 'functions' in group_config:
@@ -855,14 +1010,12 @@ def main():
                     group_id = int(group_name.split('_')[1])
                     FUNC_TO_GROUP[func_name] = group_id
     
-    # 创建 cgroup
+    # 创建子组cgroup
     print("[INFO] Setting up cgroups...")
-    for func_name, config in CGROUP_CONFIGS.items():
-        if not ensure_cgroup(config['path'], config['cpus'], config['mems']):
-            print(f"[WARN] Failed to create cgroup {func_name}, continuing...")
-        else:
-            print(f"[INFO] Created {func_name} cgroup: {config['path']} (CPUs: {config['cpus']})")
-    
+    for group_name, config in CGROUP_CONFIGS.items():
+        # 调用修正后的 ensure_cgroup
+        ensure_cgroup(config['path'], config['cpus'], config['mems'])
+        
     # 预热工作流缓存, 固定各子函数输入
     init_redis_client()
     workflow_cached_payloads = prepare_workflow_caches()
@@ -888,7 +1041,8 @@ def main():
             group_id = FUNC_TO_GROUP[func_name]
             group_clients_count[group_id] += 1
     
-    # 对每个分组进行补齐：将 client 数量补齐到该分组 CPU 数的整数倍
+    """
+    # 将每组 client 数量补齐到该分组 CPU 数的整数倍
     random.seed(RANDOM_SEED)
     for group_name, config in CGROUP_CONFIGS.items():
         if not group_name.startswith('group_'):
@@ -923,7 +1077,53 @@ def main():
                     
                     client_configs.append((func_name, payload))
                     group_clients_count[group_id] += 1
-
+    """
+    
+    # 将每组 client 数量补满
+    random.seed(RANDOM_SEED)
+    for group_name, config in CGROUP_CONFIGS.items():
+        if not group_name.startswith('group_'):
+            continue
+        
+        group_id = int(group_name.split('_')[1])
+        cpus_allocated = len(config['cpus'].split(','))
+        current_clients = group_clients_count[group_id]
+        
+        # 需要补齐到 CPU 数量的整数倍
+        if cpus_allocated > 0:
+            TARGET_DENSITY = 5 
+    
+            # 3. 计算该组 CPU 在满载时应该跑多少个 Client
+            # 例如：2个核 * 5 = 10个 Client
+            target_clients = cpus_allocated * TARGET_DENSITY
+    
+            # 4. 计算需要补齐的数量
+            # 注意：如果初始任务极多导致密度超过5(比如刚好除尽)，padding_needed 会是 0
+            if current_clients < target_clients:
+                padding_needed = target_clients - current_clients
+                funcs_in_group = config['functions']
+            else:
+                padding_needed = 0
+        
+            print(f"[INFO] Saturating Group {group_id}: {current_clients} -> {target_clients} clients "
+                f"(CPU={cpus_allocated}, Density={TARGET_DENSITY}, +{padding_needed} padding)")
+                
+            for _ in range(padding_needed):
+                # 从该分组的函数中随机选择
+                func_name = random.choice(funcs_in_group)
+                    
+                # 获取该函数的 payload
+                if func_name in SIMPLE_ACTIONS:
+                    payload = SIMPLE_ACTIONS[func_name].copy()
+                elif func_name in workflow_cached_payloads:
+                    payload = workflow_cached_payloads[func_name].copy() if isinstance(workflow_cached_payloads[func_name], dict) else {}
+                else:
+                    payload = {}
+                    
+                client_configs.append((func_name, payload))
+                group_clients_count[group_id] += 1
+    
+    
     num_clients = len(client_configs)
     # 统计：按是否来自 SIMPLE_ACTIONS 或工作流缓存分类
     simple_count = len([c for c in client_configs if c[0] in SIMPLE_ACTIONS])
@@ -932,7 +1132,7 @@ def main():
     print(f"[INFO] Launching {num_clients} clients:")
     print(f"       - {simple_count} simple function clients")
     print(f"       - {workflow_count} workflow subfunction clients")
-    print(f"       (each group padded to the nearest multiple of its CPU count)")
+    #print(f"       (each group padded to the nearest multiple of its CPU count)")
     
     # 创建并启动客户端线程(固定时长, 每函数一个client)
     print(f"\n[INFO] Starting {num_clients} client threads (closed-loop, fixed duration {TEST_DURATION}s)...")
@@ -941,7 +1141,7 @@ def main():
     monitor_stop_event = threading.Event()
     # 使用新的 monitor_system_full 函数
     monitor_thread = threading.Thread(
-        target=monitor_system,  # 使用新的 v3 函数
+        target=monitor_system,
         # 参数: event, cgroup配置, 文件名, 目标磁盘
         args=(monitor_stop_event, CGROUP_CONFIGS, "system_metrics.csv", "sda")
     )
