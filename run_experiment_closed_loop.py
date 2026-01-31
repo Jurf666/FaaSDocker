@@ -20,11 +20,11 @@ controller_port = os.environ.get('CONTROLLER_PORT', '5001')
 CONTROLLER_URL = f"http://{controller_host}:{controller_port}"
 
 # 配置参数
-TEST_DURATION = int(os.environ.get('TEST_DURATION', '1200'))        # 实验时长(秒)
+TEST_DURATION = int(os.environ.get('TEST_DURATION', '300'))        # 实验时长(秒)
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))             # 随机种子
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))                  # NUMA节点号
 
-TASK_GROUPS_FILE = 'task_groups.json'
+TASK_GROUPS_FILE = 'baseline_groups.json'
 
 # Redis 配置(用于预热工作流缓存)
 REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')

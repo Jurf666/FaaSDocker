@@ -164,7 +164,7 @@ def get_or_create_manager(function_name,cpuset_cpus=None):
                 function_name=function_name,
                 image_name='yyxie-test2',
                 container_port=5000, 
-                min_idle_containers=4,
+                min_idle_containers=2,  # 每个函数保持 2 个空闲容器
                 cpuset_cpus=cpuset_cpus
             )
         return function_managers[function_name]
