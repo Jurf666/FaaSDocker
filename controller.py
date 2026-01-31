@@ -13,10 +13,9 @@ import signal
 from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
 
-# 复用您原有的 FunctionManager
 from function_manager import FunctionManager 
 
-# --- 新增：全局任务状态存储 ---
+# 全局任务状态存储 ---
 # 结构: { "task-uuid": "running" | "completed" | "failed" }
 task_status_store = {}
 task_store_lock = threading.Lock()
@@ -33,15 +32,9 @@ logger = logging.getLogger("Controller")
 REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0.1:5984/')
-# 定义日志存储路径, 使用相对路径更加健全
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PERF_LOG_DIR = os.path.join(BASE_DIR, 'storage', 'perf_logs')
-# Perf 开关：设置为 'false' 或 '0' 可禁用 perf 记录
-ENABLE_PERF = os.environ.get('ENABLE_PERF', 'false').lower() not in ['false', '0', 'no']
 
 app = Flask(__name__)
 
-# --- 全局状态 ---
 function_managers = {}
 manager_lock = threading.Lock()
 redis_client = None
@@ -60,85 +53,44 @@ except Exception as e:
     logger.warning(f"DB Connection Failed: {e}. Workflows will fail, Simple Actions ok.")
 
 # -------------------------------------------------------------------------
-# Part 1: Perf 数据解析与去噪工具
+# Part 1: 核心代码
 # -------------------------------------------------------------------------
-
-def parse_perf_log(log_path):
-    """读取 perf 输出文件，返回指标字典"""
-    metrics = {}
-    if not os.path.exists(log_path):
-        return metrics
-
-    try:
-        with open(log_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                
-                parts = line.replace(',', '').split()
-                if len(parts) < 2: continue
-
-                try:
-                    val = float(parts[0])
-                except ValueError: continue 
-
-                second_part = parts[1]
-                if second_part in ['msec', 'ms', 'sec', 'seconds']:
-                    if len(parts) >= 3:
-                        key = parts[2]
-                        if key == 'time' and len(parts) >= 4 and parts[3] == 'elapsed':
-                            metrics['seconds'] = val 
-                        else:
-                            metrics[key] = val
-                else:
-                    key = parts[1]
-                    metrics[key] = val
-    except Exception as e:
-        logger.error(f"[Perf] Error parsing {log_path}: {e}")
-    return metrics
-
-def calculate_clean_metrics(real_metrics, noise_metrics):
-    """计算 Real - Noise"""
-    clean = {}
-    keys_of_interest = [
-        'cycles','instructions',
-        'task-clock','context-switches',
-        'cache-misses','L1-dcache-load-misses',
-        'LLC-load-misses','page-faults',
-        'major-faults','minor-faults',
-        'branch-misses'
-    ]
-    for k in keys_of_interest:
-        r_val = real_metrics.get(k, 0.0)
-        n_val = noise_metrics.get(k, 0.0)
-        clean[k] = max(0.0, r_val - n_val)
+def dispatch(function_name, payload, is_workflow=False):
     
-    if clean.get('cycles', 0) > 0:
-        clean['IPC'] = clean['instructions'] / clean['cycles']
+    result, target_cid, target_duration = dispatch_core(function_name, payload, is_workflow)
+
+    if not is_workflow:
+        if isinstance(result, dict):
+            out = dict(result)  # shallow copy
+        else:
+            out = {"_value": result}
+
+        out.setdefault('__meta__', {})
+        out['__meta__'].update({
+            'container_id': target_cid,
+            'duration': target_duration,
+            'func_duration': target_duration
+        })
+        return out
     else:
-        clean['IPC'] = 0.0
-    return clean
+        # workflow 调用：返回结果和一个附加的元数据字典（包含本次调用的 pid/container/duration）
+        # 注意：workflow 内部会多次调用 dispatch，每次都会有自己的 pid
+        # 这里只返回最外层的 target action 的 pid，子任务由 workflow 函数收集
+        return result, {
+            'container_id': target_cid,
+            'duration': target_duration,
+               'func_duration': target_duration
+        }
 
-# -------------------------------------------------------------------------
-# Part 2: 核心执行逻辑 (支持 run_id 用于文件命名)
-# -------------------------------------------------------------------------
 
-def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=None, run_id=None):
-    """
-    底层调度函数。
-    新增参数 run_id: 用于生成唯一的 perf 日志文件名，防止覆盖。
-    """
+def dispatch_core(function_name, payload, is_workflow=False):
+
     request_id = f"req-{uuid.uuid4().hex[:8]}"
     
     # 1. 获取 Manager
-    manager = _get_or_create_manager(function_name)
-
+    manager = get_or_create_manager(function_name)
     container_id = None
-    perf_process = None
-    perf_log_file = None
-    pid = None
-    
+
     try:
         # 2. 获取容器
         host_port, container_id = manager.get_container_for_request()
@@ -162,35 +114,7 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
         except requests.RequestException:
             pass 
 
-        # 5. START PERF
-        perf_output_filename = None
-        if custom_log_dir and ENABLE_PERF:
-            try:
-                pid = 0
-                with manager.lock:
-                    if container_id in manager.containers:
-                        container_obj = manager.containers[container_id]["container_obj"]
-                        container_obj.reload()
-                        pid = container_obj.attrs['State']['Pid']
-                
-                if pid:
-                    os.makedirs(custom_log_dir, exist_ok=True)
-                    
-                    # --- 关键修改：文件名加入 run_id 前缀 ---
-                    prefix = f"{run_id}_" if run_id else ""
-                    perf_output_filename = os.path.join(custom_log_dir, f"{prefix}{function_name}_{container_id[:12]}.txt")
-                    
-                    events = 'cycles,instructions,task-clock,context-switches,cache-misses,L1-dcache-load-misses,LLC-load-misses,page-faults,major-faults,minor-faults,branch-misses'
-                    perf_cmd = ['sudo', 'perf', 'stat', '-p', str(pid), '-e', events, 'sleep', '2000']
-                    
-                    perf_log_file = open(perf_output_filename, 'w')
-                    perf_process = subprocess.Popen(perf_cmd, stdout=subprocess.PIPE, stderr=perf_log_file, preexec_fn=os.setsid)
-                    time.sleep(0.1) 
-            except Exception as e:
-                logger.warning(f"Perf start failed: {e}")
-                if perf_log_file: perf_log_file.close()
-
-        # 6. RUN
+        # 5. RUN
         start = time.time()
         # 调整了 timeout 为 2000s 以避免 matmul 超时
         resp = requests.post(f"http://127.0.0.1:{host_port}/run", json=proxy_payload, timeout=2000)
@@ -200,16 +124,8 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
             # 显式抛出包含错误信息的异常，方便调试
             raise Exception(f"Container Error: {resp.text}") 
         resp.raise_for_status()
-        
-        # 7. STOP PERF
-        if perf_process:
-            try: os.killpg(os.getpgid(perf_process.pid), signal.SIGINT)
-            except: pass
-            try: perf_process.communicate(timeout=2)
-            except subprocess.TimeoutExpired: perf_process.kill()
-            if perf_log_file: perf_log_file.close()
 
-        # 8. 解析结果
+        # 6. 解析结果
         full_data = resp.json() 
         proxy_result = full_data.get("result", {})
         # proxy 返回结构: { start_time, end_time, duration(HTTP 全过程), result: { func_result, func_duration, ... } }
@@ -222,146 +138,60 @@ def _dispatch_core(function_name, payload, is_workflow=False, custom_log_dir=Non
         final_result = proxy_result.get("output_keys", {}) if is_workflow else proxy_result.get("func_result")
 
         # 返回结果、容器ID、perf 日志路径、容器 pid 以及函数执行时间（供 cgroup 操作使用）
-        return final_result, container_id, perf_output_filename, pid, duration_from_proxy
+        return final_result, container_id,duration_from_proxy
 
     except Exception as e:
-        if perf_process:
-            try: perf_process.kill()
-            except: pass
-        if perf_log_file: perf_log_file.close()
-        
         logger.error(f"[Dispatch] Failed for {function_name}: {e}")
         raise e
     finally:
         if container_id:
             manager.release_container(container_id)
 
-# -------------------------------------------------------------------------
-# Part 3: 去噪调度器 Wrapper (生成 Run ID)
-# -------------------------------------------------------------------------
-
-def dispatch(function_name, payload, is_workflow=False):
+def get_or_create_manager(function_name,cpuset_cpus=None):
     """
-    智能调度器：自动执行去噪逻辑 (noop -> target)。
-    每次调用生成唯一的 run_id (时间戳)，确保文件不覆盖。
-    
-    注意：如果 ENABLE_PERF=false，则不会生成 perf 日志。
+    线程安全地获取 FunctionManager，如果不存在则使用默认配置创建。
     """
-    action_log_dir = os.path.join(PERF_LOG_DIR, function_name)
-    os.makedirs(action_log_dir, exist_ok=True)
-    
-    # --- 关键修改：生成唯一 Run ID ---
-    # 使用纳秒级时间戳确保唯一性
-    run_id = str(time.time_ns())
+    # 1. 快速检查（无锁），稍微提高性能（可选）
+    if function_name in function_managers:
+        return function_managers[function_name]
 
-    # Step 1: Baseline (Noop)
-    if function_name == 'noop':
-        res, _, _, _, duration = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
-        return res, {'container_pid': None, 'container_id': None, 'perf_log': None, 'duration': duration, 'func_duration': duration}
+    # 2. 加锁进行创建或获取
+    with manager_lock:
+        # 双重检查：防止在等待锁的过程中已经被别的线程创建了
+        if function_name not in function_managers:
+            # 统一在这里配置镜像名、端口等参数
+            function_managers[function_name] = FunctionManager(
+                function_name=function_name,
+                image_name='yyxie-test2',
+                container_port=5000, 
+                min_idle_containers=4,
+                cpuset_cpus=cpuset_cpus
+            )
+        return function_managers[function_name]
 
-    noise_metrics = {}
-    noop_log_path = None
-    
+# -------------------------------------------------------------------------
+# Part 2: 工作流相关
+# -------------------------------------------------------------------------
+def run_workflow_async(name, payload, task_id):
+    subtasks = []
     try:
-        '''
-        with manager_lock:
-            if 'noop' not in function_managers:
-                function_managers['noop'] = FunctionManager('noop', 'jywang_test', 5000, None, min_idle_containers=1)
-        '''
-        # 运行 noop，传入 run_id
-        _, noop_cid, noop_log_path, noop_pid, _ = _dispatch_core('noop', payload, is_workflow=False, custom_log_dir=action_log_dir, run_id=run_id)
+        update_task_status(task_id, "running")
         
-        if noop_log_path:
-            noise_metrics = parse_perf_log(noop_log_path)
-    except Exception as e:
-        logger.warning(f"[Denoise] Baseline (noop) failed: {e}. Proceeding without denoising.")
-
-    # Step 2: Target
-    # 运行 target，传入相同的 run_id，这样它们的文件前缀一致
-    result, target_cid, real_log_path, target_pid, target_duration = _dispatch_core(function_name, payload, is_workflow, custom_log_dir=action_log_dir, run_id=run_id)
-
-    # Step 3: Calculate & Save
-    try:
-        if real_log_path:
-            real_metrics = parse_perf_log(real_log_path)
-            clean_metrics = calculate_clean_metrics(real_metrics, noise_metrics)
+        # 执行原有的逻辑并收集子任务元数据
+        if name == "video":
+            subtasks = workflow_video(payload)
+        elif name == "recognizer":
+            subtasks = workflow_recognizer(payload)
+        elif name == "svd":
+            subtasks = workflow_svd()
+        elif name == "wordcount":
+            subtasks = workflow_wordcount()
             
-            # --- 关键修改：文件名加入 run_id ---
-            clean_output_path = os.path.join(action_log_dir, f"{run_id}_clean_{function_name}_{target_cid[:12]}.json")
-            
-            record = {
-                "function": function_name,
-                "run_id": run_id,
-                "timestamp": time.time(),
-                "is_workflow": is_workflow,
-                "raw_metrics": real_metrics,
-                "noise_baseline": noise_metrics,
-                "clean_metrics": clean_metrics
-            }
-            with open(clean_output_path, 'w') as f:
-                json.dump(record, f, indent=2)
-            logger.info(f"[Denoise] Metrics saved to {clean_output_path}")
+        update_task_status(task_id, "completed", subtasks=subtasks)
+        logger.info(f"Task {task_id} ({name}) completed with {len(subtasks)} subtasks.")
     except Exception as e:
-        logger.warning(f"[Denoise] Calculation failed: {e}")
-
-    # 对于 simple 调用，确保返回一个 dict，并在 '__meta__' 中附加 pid/container/perf 信息，便于客户端进行 cgroup/pinning
-    try:
-        if not is_workflow:
-            if isinstance(result, dict):
-                out = dict(result)  # shallow copy
-            else:
-                out = {"_value": result}
-
-            out.setdefault('__meta__', {})
-            out['__meta__'].update({
-                'container_pid': target_pid,
-                'container_id': target_cid,
-                'perf_log': real_log_path,
-                'duration': target_duration,
-                'func_duration': target_duration
-            })
-            return out
-        else:
-            # workflow 调用：返回结果和一个附加的元数据字典（包含本次调用的 pid/container/duration）
-            # 注意：workflow 内部会多次调用 dispatch，每次都会有自己的 pid
-            # 这里只返回最外层的 target action 的 pid，子任务由 workflow 函数收集
-            return result, {
-                'container_pid': target_pid,
-                'container_id': target_cid,
-                'perf_log': real_log_path,
-                'duration': target_duration,
-                'func_duration': target_duration
-            }
-    except Exception:
-        pass
-
-    return result
-
-# -------------------------------------------------------------------------
-# Part 4: 辅助函数 & Workflows (适配修改后的 dispatch 返回值)
-# 注意：dispatch 现在只返回 result 数据，内部逻辑处理了 run_id
-# -------------------------------------------------------------------------
-
-def save_result(db_key, filename):
-    if not redis_client: return
-    output_dir = './results'
-    if not os.path.exists(output_dir): os.makedirs(output_dir)
-    filepath = os.path.join(output_dir, filename)
-    try:
-        val = redis_client.get(db_key)
-        if val and val.startswith("COUCH_REF:") and couch_db:
-            doc_id = val.split(":", 1)[1]
-            if doc_id in couch_db:
-                with open(filepath, 'wb') as f:
-                    f.write(couch_db.get_attachment(doc_id, 'data').read())
-        elif val:
-            with open(filepath, 'w') as f:
-                try:
-                    json.dump(json.loads(val), f, indent=2)
-                except:
-                    f.write(str(val))
-    except Exception as e:
-        logger.error(f"[Save] Error: {e}")
+        logger.error(f"Task {task_id} failed: {e}")
+        update_task_status(task_id, "failed", subtasks=subtasks)
 
 def workflow_video(video_path):
     logger.info("=== Starting Video Workflow ===")
@@ -537,94 +367,64 @@ def workflow_wordcount():
     logger.info("WordCount Workflow Finished.")
     return subtasks
 
-
+# -------------------------------------------------------------------------
+# Part 3: 辅助函数
+# -------------------------------------------------------------------------
 def update_task_status(task_id, status, subtasks=None):
+    '''
+    线程安全地更新后台任务的状态。
+    它主要被 run_workflow_async 函数调用:
+        任务刚开始时：标记为 "running"
+        任务成功结束时：标记为 "completed"
+        任务报错时：标记为 "failed"
+    '''
     with task_store_lock:
         task_status_store[task_id] = {"status": status, "subtasks": subtasks or []}
-
-def run_workflow_async(name, payload, task_id):
-    subtasks = []
-    try:
-        update_task_status(task_id, "running")
         
-        # 执行原有的逻辑并收集子任务元数据
-        if name == "video":
-            subtasks = workflow_video(payload)
-        elif name == "recognizer":
-            subtasks = workflow_recognizer(payload)
-        elif name == "svd":
-            subtasks = workflow_svd()
-        elif name == "wordcount":
-            subtasks = workflow_wordcount()
-            
-        update_task_status(task_id, "completed", subtasks=subtasks)
-        logger.info(f"Task {task_id} ({name}) completed with {len(subtasks)} subtasks.")
+def save_result(db_key, filename):
+    if not redis_client: return
+    output_dir = './results'
+    if not os.path.exists(output_dir): os.makedirs(output_dir)
+    filepath = os.path.join(output_dir, filename)
+    try:
+        val = redis_client.get(db_key)
+        if val and val.startswith("COUCH_REF:") and couch_db:
+            doc_id = val.split(":", 1)[1]
+            if doc_id in couch_db:
+                with open(filepath, 'wb') as f:
+                    f.write(couch_db.get_attachment(doc_id, 'data').read())
+        elif val:
+            with open(filepath, 'w') as f:
+                try:
+                    json.dump(json.loads(val), f, indent=2)
+                except:
+                    f.write(str(val))
     except Exception as e:
-        logger.error(f"Task {task_id} failed: {e}")
-        update_task_status(task_id, "failed", subtasks=subtasks)
-
+        logger.error(f"[Save] Error: {e}")
+    
 def clean_up():
     logger.info("Stopping all containers...")
     with manager_lock:
         for m in function_managers.values(): m.stop_all_containers()
 
-# --- 新增的辅助函数 ---
-def _get_or_create_manager(function_name):
-    """
-    线程安全地获取 FunctionManager，如果不存在则使用默认配置创建。
-    """
-    # 1. 快速检查（无锁），稍微提高性能（可选）
-    if function_name in function_managers:
-        return function_managers[function_name]
-
-    # 2. 加锁进行创建或获取
-    with manager_lock:
-        # 双重检查：防止在等待锁的过程中已经被别的线程创建了
-        if function_name not in function_managers:
-            # 统一在这里配置镜像名、端口等参数
-            function_managers[function_name] = FunctionManager(
-                function_name=function_name,
-                image_name='yyxie-test2',     # 统一配置
-                container_port=5000,          # 统一配置
-                host_storage_path=None, 
-                min_idle_containers=1
-            )
-        return function_managers[function_name]
-
 # -------------------------------------------------------------------------
-# Part 5: HTTP 接口
+# Part 4: 核心HTTP 接口
 # -------------------------------------------------------------------------
-
 @app.route('/create_manager', methods=['POST'])
 def create_manager():
     body = request.get_json(silent=True) or {}
     function_name = body.get("function_name")
+    cpuset_cpus = body.get("cpuset_cpus")
     if not function_name: return jsonify({"error": "function_name required"}), 400
     already_exists = function_name in function_managers
-    _get_or_create_manager(function_name)
-    
     if already_exists:
         return jsonify({"status": "exists"}), 200
     else:
+        get_or_create_manager(function_name,cpuset_cpus=cpuset_cpus)
         return jsonify({"status": "created"}), 201
-'''
+
 @app.route('/dispatch_workflow', methods=['POST'])
-def dispatch_workflow_api():
-    body = request.get_json(silent=True) or {}
-    name = body.get("workflow_name")
-    t = None
-    if name == "video": t = threading.Thread(target=workflow_video, args=(None,), name="WF-Video")
-    elif name == "recognizer": t = threading.Thread(target=workflow_recognizer, args=(None,), name="WF-Recognizer")
-    elif name == "svd": t = threading.Thread(target=workflow_svd, name="WF-SVD")
-    elif name == "wordcount": t = threading.Thread(target=workflow_wordcount, name="WF-WordCount")
-    
-    if t:
-        t.start()
-        return jsonify({"status": "started", "workflow": name}), 202
-    return jsonify({"error": "Unknown workflow"}), 400
-'''
-@app.route('/dispatch_workflow', methods=['POST'])
-def dispatch_workflow_api():
+def dispatch_workflow():
     body = request.get_json(silent=True) or {}
     name = body.get("workflow_name")
     payload = body.get("payload", {})
@@ -651,11 +451,24 @@ def dispatch_single(function_name):
         return jsonify({"status": "success", "output": output}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+@app.route('/check_task/<task_id>', methods=['GET'])
+def check_task(task_id):
+    """
+    查询状态接口
+    用户拿着上面的 ID 来轮询：“我的任务跑完了吗？”
+    返回状态：running / completed / failed。
+    """
+    with task_store_lock:
+        task_info = task_status_store.get(task_id, {"status": "unknown", "subtasks": []})
+    # 兼容旧格式（字符串）和新格式（字典）
+    if isinstance(task_info, str):
+        return jsonify({"task_id": task_id, "status": task_info, "subtasks": []}), 200
+    return jsonify({"task_id": task_id, "status": task_info.get("status", "unknown"), "subtasks": task_info.get("subtasks", [])}), 200
 
-# =========================================================================
-# 工作流子函数独立 REST 端点 (方案 A)
-# =========================================================================
-
+# -------------------------------------------------------------------------
+# Part 5: 工作流子函数独立化
+# -------------------------------------------------------------------------
 # --- Video Workflow Sub-functions ---
 @app.route('/dispatch/video_upload', methods=['POST'])
 def dispatch_video_upload():
@@ -929,23 +742,8 @@ def manager_status(function_name):
         ports = [ {"id": cid[:12], "host_port": d.get("host_port")} for cid,d in m.containers.items() ]
     return jsonify({"function": function_name, "total": total, "idle": idle, "busy": busy, "containers": ports})
 
-# --- 新增：查询状态接口 ---432
-@app.route('/check_task/<task_id>', methods=['GET'])
-def check_task(task_id):
-    with task_store_lock:
-        task_info = task_status_store.get(task_id, {"status": "unknown", "subtasks": []})
-    # 兼容旧格式（字符串）和新格式（字典）
-    if isinstance(task_info, str):
-        return jsonify({"task_id": task_id, "status": task_info, "subtasks": []}), 200
-    return jsonify({"task_id": task_id, "status": task_info.get("status", "unknown"), "subtasks": task_info.get("subtasks", [])}), 200
-
+#controller退出时清理所有容器
 atexit.register(clean_up)
 
 if __name__ == '__main__':
-    os.makedirs(PERF_LOG_DIR, exist_ok=True)
-    # 支持通过环境变量改变监听地址与端口，方便多用户在同机运行
-    host = os.environ.get('CONTROLLER_HOST', '0.0.0.0')
-    port = int(os.environ.get('CONTROLLER_PORT', '5001'))
-    logger.info(f"Starting Controller on {host}:{port}")
-    logger.info(f"ENABLE_PERF={ENABLE_PERF} (set ENABLE_PERF=false to disable perf recording)")
-    app.run(host=host, port=port, threaded=True)
+    app.run(host='0.0.0.0', port=5001, threaded=True)

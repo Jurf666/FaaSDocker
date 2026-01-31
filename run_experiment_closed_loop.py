@@ -1,21 +1,5 @@
-#!/usr/bin/env python3
-"""
-Closed-Loop 性能测试: 固定数量的客户端串行处理请求队列
-每个客户端只有在完成当前请求后, 才会从队列取下一个请求
-
-使用示例: 
----------
-# 基础用法: 基于task_groups.json配置自动生成cgroups, 为各函数分配CPU核心
-# TEST_DURATION=180 NUMA_NODE=0 python3 run_experiment_closed_loop.py
-
-环境变量: 
----------
-TEST_DURATION: 实验时长秒(默认60)
-NUMA_NODE: NUMA节点号(默认0, 用于选择CPU范围)
-RANDOM_SEED: 随机种子(默认42)
-"""
-import psutil # 新增
-import csv    # 新增
+import psutil 
+import csv    
 import requests
 import time
 import json
@@ -40,8 +24,6 @@ TEST_DURATION = int(os.environ.get('TEST_DURATION', '1200'))        # 实验时�
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))             # 随机种子
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))                  # NUMA节点号
 
-# Cgroup 配置
-CGROUP_PARENT = '/sys/fs/cgroup/user_experiments'
 TASK_GROUPS_FILE = 'task_groups.json'
 
 # Redis 配置(用于预热工作流缓存)
@@ -77,7 +59,9 @@ SIMPLE_ACTIONS = {
 perf_data = defaultdict(list)  # {function_name: [duration1, duration2, ...]}
 data_lock = threading.Lock()
 
-
+# -------------------------------------------------------------------------
+# Part 1: 准备工作
+# -------------------------------------------------------------------------
 def init_redis_client():
     """初始化 Redis 连接, 用于工作流中间结果缓存。"""
     global redis_client
@@ -97,7 +81,6 @@ def init_redis_client():
         print(f"[WARN] Redis not available, workflow cache warmup skipped: {e}")
     return redis_client
 
-
 def init_couchdb_client():
     """初始化 CouchDB 连接, 用于清理工作流中间数据。"""
     global couchdb_client
@@ -111,332 +94,44 @@ def init_couchdb_client():
         couchdb_client = None
         print(f"[WARN] CouchDB not available, cleanup may be incomplete: {e}")
     return couchdb_client
-
-
-def cleanup_workflow_data():
-    """清理工作流产生的中间数据（Redis + CouchDB）"""
-    print("\n[INFO] === Cleaning up workflow intermediate data ===")
-    
-    # 1. 清理 Redis 中的工作流相关 key
-    if redis_client:
-        try:
-            # 获取所有 key 并过滤出工作流相关的
-            all_keys = redis_client.keys('*')
-            workflow_patterns = [
-                'req-*', 'warmup-*', 'sys-*', 'const_target_*',
-                '*video*', '*recognizer*', '*svd*', '*wordcount*',
-                '*split*', '*transcode*', '*merge*', '*upload*',
-                '*adult*', '*violence*', '*extract*', '*censor*',
-                '*translate*', '*mosaic*', '*compute*', '*count*'
-            ]
-            
-            keys_to_delete = []
-            for key in all_keys:
-                # 检查是否匹配工作流模式
-                for pattern in workflow_patterns:
-                    import fnmatch
-                    if fnmatch.fnmatch(key, pattern):
-                        keys_to_delete.append(key)
-                        break
-            
-            if keys_to_delete:
-                # 批量删除
-                deleted = redis_client.delete(*keys_to_delete)
-                print(f"[INFO] Deleted {deleted} workflow keys from Redis")
-            else:
-                print(f"[INFO] No workflow keys found in Redis (total keys: {len(all_keys)})")
-        except Exception as e:
-            print(f"[WARN] Failed to cleanup Redis: {e}")
-    
-    # 2. 清理 CouchDB 中的 faas_data 数据库
-    if init_couchdb_client():
-        try:
-            import couchdb
-            if 'faas_data' in couchdb_client:
-                db = couchdb_client['faas_data']
-                doc_count = 0
-                docs_to_delete = []
-                
-                # 收集所有文档
-                for doc_id in db:
-                    # 跳过设计文档
-                    if not doc_id.startswith('_'):
-                        doc = db[doc_id]
-                        docs_to_delete.append({'_id': doc_id, '_rev': doc['_rev'], '_deleted': True})
-                        doc_count += 1
-                
-                # 批量删除
-                if docs_to_delete:
-                    db.update(docs_to_delete)
-                    print(f"[INFO] Deleted {doc_count} documents from CouchDB faas_data database")
-                else:
-                    print(f"[INFO] No documents found in CouchDB faas_data database")
-            else:
-                print(f"[INFO] CouchDB faas_data database does not exist, nothing to clean")
-        except Exception as e:
-            print(f"[WARN] Failed to cleanup CouchDB: {e}")
-    
-    print("[INFO] === Cleanup completed ===")
-
-
-def first_item(val):
-    """提取列表首元素或直接返回值。"""
-    if isinstance(val, list) and val:
-        return val[0]
-    return val
-
-def force_delete_cgroup(cgroup_path):
+  
+def init_controller_managers(cgroup_configs, func_to_group):
     """
-    强制删除一个 Cgroup 目录：
-    1. 杀掉里面的所有进程
-    2. 如果当前进程在里面，将当前进程移出
-    3. 删除目录
+    遍历所有函数，根据计算出的分组信息，调用 Controller 的 API 进行初始化。
+    这样 Controller 在创建容器时就会直接加上 --cpuset-cpus 参数。
     """
-    if not os.path.exists(cgroup_path):
-        return
-
-    # 1. 读取里面的 PIDs
-    procs_file = os.path.join(cgroup_path, 'cgroup.procs')
-    try:
-        with open(procs_file, 'r') as f:
-            pids = f.read().split()
-    except Exception:
-        pids = []
-
-    current_pid = str(os.getpid())
-
-    # 2. 处理进程
-    for pid in pids:
-        pid = pid.strip()
-        if not pid: continue
-
-        if pid == current_pid:
-            # === 情况A: 当前脚本自己在里面，必须先“逃生” ===
-            # 将自己移动到根 cgroup 或者父 cgroup
-            escape_path = "/sys/fs/cgroup/cgroup.procs" 
-            try:
-                with open(escape_path, 'w') as f:
-                    f.write(pid)
-                print(f"[CLEANUP] Moved self (PID {pid}) out of {cgroup_path} to root.")
-            except Exception as e:
-                print(f"[ERROR] Failed to move self out of cgroup: {e}")
-        else:
-            # === 情况B: 其它残留进程，杀无赦 ===
-            try:
-                os.kill(int(pid), signal.SIGKILL)
-                print(f"[CLEANUP] Killed lingering PID {pid} in {cgroup_path}")
-            except ProcessLookupError:
-                pass # 进程可能已经没了
-            except Exception as e:
-                print(f"[WARN] Failed to kill PID {pid}: {e}")
-
-    # 3. 给操作系统一点时间回收进程
-    time.sleep(0.2) 
-
-    # 4. 尝试删除目录 (带有重试机制)
-    max_retries = 3
-    for i in range(max_retries):
-        try:
-            os.rmdir(cgroup_path)
-            print(f"[CLEANUP] Successfully removed {cgroup_path}")
-            return
-        except OSError as e:
-            if "Device or resource busy" in str(e):
-                # 可能还有顽固进程，或者有子目录没删干净
-                time.sleep(0.5)
-                # 再次尝试杀进程（防止有新生成的或者没杀掉的）
-                if i < max_retries - 1:
-                    continue 
-            print(f"[WARN] Attempt {i+1} failed to remove {cgroup_path}: {e}")
-
-def cleanup_previous_cgroups():
-    """遍历清理所有实验相关的 Cgroup"""
-    if os.path.exists(CGROUP_PARENT):
-        print("[INFO] Cleaning up previous cgroups...")
-        # 遍历父目录下的所有子目录 (group_0, group_1, ...)
-        subdirs = [os.path.join(CGROUP_PARENT, d) for d in os.listdir(CGROUP_PARENT)]
-        
-        for subdir in subdirs:
-            if os.path.isdir(subdir) and "group_" in subdir:
-                force_delete_cgroup(subdir)
-        
-        # 可选：如果你想连父目录也删掉 (通常不需要，除非你想重置 user_experiments)
-        # force_delete_cgroup(CGROUP_PARENT)
-
-
-def ensure_cgroup(cgroup_path, cpus, mems):
-    """创建 cgroup 并配置 cpuset (修正版：只配置子组)"""
-    try:
-        # 1. 确保目录存在
-        os.makedirs(cgroup_path, exist_ok=True)
-        
-        # 2. 启用 cpuset 控制器 (如果需要)
-        # 注意：通常需要在 user_experiments 这一层开启 subtree_control，
-        # 但这通常只需要做一次。这里保留之前的逻辑也可，只要不改 parent 的 cpus 即可。
-        # 为保险起见，建议把 subtree_control 的逻辑移到外面，或者仅检查不写入
-        
-        # 3. 配置子组的 CPUs 和 Mems
-        child_cpus = os.path.join(cgroup_path, 'cpuset.cpus')
-        child_mems = os.path.join(cgroup_path, 'cpuset.mems')
-        
-        with open(child_cpus, 'w') as f:
-            f.write(cpus)
-        with open(child_mems, 'w') as f:
-            f.write(mems)
-        
-        # 4. 初始化 procs 文件
-        procs = os.path.join(cgroup_path, 'cgroup.procs')
-        if not os.path.exists(procs):
-            open(procs, 'w').close()
-            
-        print(f"[INFO] Configured cgroup: {cgroup_path} (CPUs: {cpus})")
-        return True
-    except Exception as e:
-        print(f"[ERROR] Failed to configure cgroup {cgroup_path}: {e}")
-        return False
-
-def init_parent_cgroup(numa_node):
-    """初始化父 cgroup，授予所有权限"""
-    if not os.path.exists(CGROUP_PARENT):
-        os.makedirs(CGROUP_PARENT, exist_ok=True)
+    print("[INFO] Initializing Function Managers on Controller with CPU sets...")
     
-    # 启用子树控制
-    subtree = os.path.join(CGROUP_PARENT, 'cgroup.subtree_control')
-    try:
-        with open(subtree, 'r+') as f:
-            if '+cpuset' not in f.read():
-                f.write('+cpuset')
-    except Exception:
-        pass # 可能已经启用了
-        
-    # === 关键：给父组分配足够大的 CPU 范围 ===
-    parent_cpus = os.path.join(CGROUP_PARENT, 'cpuset.cpus')
-    parent_mems = os.path.join(CGROUP_PARENT, 'cpuset.mems')
+    # 获取所有涉及的函数
+    all_funcs = set(func_to_group.keys())
     
-    try:
-        with open(parent_cpus, 'w') as f:
-            # 这里的范围必须覆盖所有子组需要的 CPU
-            f.write("0-127") 
-        with open(parent_mems, 'w') as f:
-            f.write(str(numa_node))
-        print("[INFO] Parent cgroup initialized with broad CPU range.")
-    except Exception as e:
-        print(f"[WARN] Failed to init parent cgroup: {e}")
-
-def get_cgroup_for_function(func_name):
-    """根据函数名获取对应的 cgroup 配置"""
-    # 如果函数在映射中, 找到它属于的分组, 返回该分组的cgroup配置
-    if func_name in FUNC_TO_GROUP:
-        group_id = FUNC_TO_GROUP[func_name]
+    # 同时也包含那些可能没在 task_groups 但在 SIMPLE_ACTIONS 里的（如果有默认组的话）
+    # 这里主要关注 task_groups.json 里定义的
+    
+    for func_name in all_funcs:
+        group_id = func_to_group[func_name]
         group_name = f"group_{group_id}"
-        if group_name in CGROUP_CONFIGS:
-            return CGROUP_CONFIGS[group_name]
-    
-    # 如果找不到, 返回default cgroup
-    if 'default' in CGROUP_CONFIGS:
-        return CGROUP_CONFIGS['default']
-    
-    # 最后的备选方案
-    return {'path': CGROUP_PARENT, 'cpus': '0', 'mems': '0'}
-
-
-def write_pid_to_cgroup(pid, cgroup_path):
-    """将 PID 写入指定的 cgroup"""
-    procs_path = os.path.join(cgroup_path, 'cgroup.procs')
-    try:
-        with open(procs_path, 'a') as f:
-            f.write(str(int(pid)) + '\n')
-        return True
-    except Exception:
+        
+        cpuset = None
+        if group_name in cgroup_configs:
+            cpuset = cgroup_configs[group_name]['cpus']
+        
+        # 调用 Controller
         try:
-            os.system(f"echo {int(pid)} | sudo tee {procs_path} > /dev/null")
-            return True
+            resp = requests.post(
+                f"{CONTROLLER_URL}/create_manager",
+                json={
+                    "function_name": func_name,
+                    "cpuset_cpus": cpuset
+                },
+                timeout=5
+            )
+            if resp.status_code in [200, 201]:
+                print(f"   > Init {func_name}: cpuset={cpuset} (OK)")
+            else:
+                print(f"   > Init {func_name}: Failed {resp.text}")
         except Exception as e:
-            print(f"[ERROR] Failed to write pid {pid} to {procs_path}: {e}")
-            return False
-
-
-def dispatch_simple(func_name, payload, request_id):
-    """发送简单函数请求"""
-    start_time = time.time()
-    try:
-        resp = requests.post(
-            f"{CONTROLLER_URL}/dispatch/{func_name}",
-            json=payload,
-            timeout=1200
-        )
-        
-        if resp.status_code != 200:
-            print(f"[ERROR] Request {request_id} ({func_name}) failed: {resp.status_code}")
-            print(f"[ERROR] Response body: {resp.text}")
-            return None
-        
-        data = resp.json()
-        out = data.get('output') if isinstance(data, dict) else None
-        print(f"[DEBUG] {request_id} ({func_name}): response keys={list(data.keys())}, output type={type(out)}")
-        
-        pid = None
-        container_id = None
-        duration = None
-        
-        if isinstance(out, dict):
-            meta = out.get('__meta__', {})
-            pid = meta.get('container_pid')
-            container_id = meta.get('container_id')
-            duration = meta.get('duration') or meta.get('func_duration')
-            print(f"[DEBUG] {request_id} ({func_name}): meta={meta}, duration={duration}")
-        else:
-            print(f"[DEBUG] {request_id} ({func_name}): output is not dict, out={out}")
-        
-        if not pid and container_id:
-            try:
-                import subprocess
-                outp = subprocess.check_output(
-                    ['docker', 'inspect', '--format', '{{.State.Pid}}', container_id],
-                    stderr=subprocess.DEVNULL
-                )
-                pid = int(outp.decode().strip()) if outp else None
-            except Exception:
-                pass
-        
-        if pid:
-            cgroup_config = get_cgroup_for_function(func_name)
-            write_pid_to_cgroup(pid, cgroup_config['path'])
-        
-        # 检查 duration 是否有效，且 output 不包含错误信息
-        is_valid_duration = (duration is not None) and (duration > 0)
-        
-        # 检查是否返回了错误信息 (Proxy 抛异常时通常返回 {"error": ...})
-        has_error = False
-        if isinstance(out, dict) and 'error' in out:
-            has_error = True
-            print(f"[WARN] Request {request_id} failed with error: {out['error']}")
-
-        if is_valid_duration and not has_error:
-            with data_lock:
-                perf_data[func_name].append(duration)
-        else:
-            # 可选：记录一下被丢弃的数据，方便调试
-            if duration == 0 or duration is None:
-                print(f"[FILTER] Ignored invalid duration {duration} for {func_name}")
-        
-        end_time = time.time()
-        latency = end_time - start_time
-        
-        return {
-            'request_id': request_id,
-            'function': func_name,
-            'duration': duration,
-            'latency': latency,
-            'pid': pid,
-            'container_id': container_id,
-            'output': out
-        }
-    
-    except Exception as e:
-        print(f"[ERROR] Request {request_id} ({func_name}) exception: {e}")
-        return None
-
+            print(f"   > Init {func_name}: Error {e}")
 
 def prepare_workflow_caches():
     """预热工作流一次, 固定生成各子函数可重复使用的输入。
@@ -617,28 +312,10 @@ def prepare_workflow_caches():
     print(f"[INFO] Prepared workflow caches for {len(caches)} subfunctions: {list(caches.keys())}")
     return caches
 
-
-def client_worker(client_id, func_name, payload_template, end_time):
-    """固定功能的闭环client: 在截止时间前持续发送请求"""
-    request_counter = 0
-
-    try:
-        while time.time() < end_time:
-            request_id = f"{func_name}-{client_id}-{request_counter}"
-            payload = payload_template.copy() if isinstance(payload_template, dict) else {}
-            result = dispatch_simple(func_name, payload, request_id)
-
-            if result:
-                print(f"[CLIENT {client_id}] Completed request {request_id} ({func_name})")
-            else:
-                print(f"[CLIENT {client_id}] Failed request {request_id} ({func_name})")
-
-            request_counter += 1
-    except Exception as e:
-        print(f"[CLIENT {client_id}] Exception: {e}")
-
-
-def generate_cgroups_from_task_groups(task_groups_file, numa_node, cgroup_parent):
+# -------------------------------------------------------------------------
+# Part 2: 核心代码
+# -------------------------------------------------------------------------
+def generate_cgroups_from_task_groups(task_groups_file, numa_node):
     """
     基于task_groups.json生成cgroup配置
     
@@ -655,7 +332,6 @@ def generate_cgroups_from_task_groups(task_groups_file, numa_node, cgroup_parent
         print(f"[WARN] {task_groups_file} not found, using default cgroup")
         return {
             'default': {
-                'path': os.path.join(cgroup_parent, 'default'),
                 'cpus': '0',
                 'mems': str(numa_node)
             }
@@ -721,9 +397,7 @@ def generate_cgroups_from_task_groups(task_groups_file, numa_node, cgroup_parent
             cpus_str = ','.join(map(str, cpus_list))
             # 使用group_id作为cgroup名称
             group_name = f"group_{group_id}"
-            cgroup_path = os.path.join(cgroup_parent, group_name)
             configs[group_name] = {
-                'path': cgroup_path,
                 'cpus': cpus_str,
                 'mems': str(numa_node),
                 'functions': funcs_in_group  # 记录该分组包含的函数
@@ -733,7 +407,107 @@ def generate_cgroups_from_task_groups(task_groups_file, numa_node, cgroup_parent
     
     return configs
 
+def get_cgroup_for_function(func_name):
+    """根据函数名获取对应的 cgroup 配置"""
+    # 如果函数在映射中, 找到它属于的分组, 返回该分组的cgroup配置
+    if func_name in FUNC_TO_GROUP:
+        group_id = FUNC_TO_GROUP[func_name]
+        group_name = f"group_{group_id}"
+        if group_name in CGROUP_CONFIGS:
+            return CGROUP_CONFIGS[group_name]
+    
+    # 如果找不到, 返回default cgroup
+    if 'default' in CGROUP_CONFIGS:
+        return CGROUP_CONFIGS['default']
+    
+    # 最后的备选方案
+    return {'cpus': '0', 'mems': '0'}
 
+def dispatch_simple(func_name, payload, request_id):
+    """发送简单函数请求"""
+    start_time = time.time()
+    try:
+        resp = requests.post(
+            f"{CONTROLLER_URL}/dispatch/{func_name}",
+            json=payload,
+            timeout=1200
+        )
+        
+        if resp.status_code != 200:
+            print(f"[ERROR] Request {request_id} ({func_name}) failed: {resp.status_code}")
+            print(f"[ERROR] Response body: {resp.text}")
+            return None
+        
+        data = resp.json()
+        out = data.get('output') if isinstance(data, dict) else None
+        print(f"[DEBUG] {request_id} ({func_name}): response keys={list(data.keys())}, output type={type(out)}")
+        
+        container_id = None
+        duration = None
+        
+        if isinstance(out, dict):
+            meta = out.get('__meta__', {})
+            container_id = meta.get('container_id')
+            duration = meta.get('duration') or meta.get('func_duration')
+            print(f"[DEBUG] {request_id} ({func_name}): meta={meta}, duration={duration}")
+        else:
+            print(f"[DEBUG] {request_id} ({func_name}): output is not dict, out={out}")
+        
+        # 检查 duration 是否有效，且 output 不包含错误信息
+        is_valid_duration = (duration is not None) and (duration > 0)
+        
+        # 检查是否返回了错误信息 (Proxy 抛异常时通常返回 {"error": ...})
+        has_error = False
+        if isinstance(out, dict) and 'error' in out:
+            has_error = True
+            print(f"[WARN] Request {request_id} failed with error: {out['error']}")
+
+        if is_valid_duration and not has_error:
+            with data_lock:
+                perf_data[func_name].append(duration)
+        else:
+            # 可选：记录一下被丢弃的数据，方便调试
+            if duration == 0 or duration is None:
+                print(f"[FILTER] Ignored invalid duration {duration} for {func_name}")
+        
+        end_time = time.time()
+        latency = end_time - start_time
+        
+        return {
+            'request_id': request_id,
+            'function': func_name,
+            'duration': duration,
+            'latency': latency,
+            'container_id': container_id,
+            'output': out
+        }
+    
+    except Exception as e:
+        print(f"[ERROR] Request {request_id} ({func_name}) exception: {e}")
+        return None
+
+def client_worker(client_id, func_name, payload_template, end_time):
+    """固定功能的闭环client: 在截止时间前持续发送请求"""
+    request_counter = 0
+
+    try:
+        while time.time() < end_time:
+            request_id = f"{func_name}-{client_id}-{request_counter}"
+            payload = payload_template.copy() if isinstance(payload_template, dict) else {}
+            result = dispatch_simple(func_name, payload, request_id)
+
+            if result:
+                print(f"[CLIENT {client_id}] Completed request {request_id} ({func_name})")
+            else:
+                print(f"[CLIENT {client_id}] Failed request {request_id} ({func_name})")
+
+            request_counter += 1
+    except Exception as e:
+        print(f"[CLIENT {client_id}] Exception: {e}")
+
+# -------------------------------------------------------------------------
+# Part 3: 指标监控与计算
+# -------------------------------------------------------------------------
 def compute_stability(times):
     """计算统计指标"""
     if not times:
@@ -756,88 +530,7 @@ def compute_stability(times):
         "p95": float(np.percentile(arr, 95))
     }
 
-"""
-def monitor_cpu_usage(stop_event, cgroup_configs, filename="cpu_metrics.csv"):
-    #后台线程：每秒记录一次被分配核心的 CPU 使用率
-    print(f"[MONITOR] Starting CPU monitor via psutil, saving to {filename}...")
-    
-    # 1. 解析需要监控的核心 ID 及其所属分组
-    # 结构: { cpu_id: "group_0", ... }
-    target_cpus_map = {}
-    for group_name, config in cgroup_configs.items():
-        if 'cpus' in config:
-            # config['cpus'] 是类似 "0,64" 的字符串
-            cpu_ids = [int(x) for x in config['cpus'].split(',') if x.strip()]
-            for cid in cpu_ids:
-                target_cpus_map[cid] = group_name
-
-    target_cpu_list = sorted(target_cpus_map.keys())
-    
-    # 2. 初始化 CSV
-    with open(filename, 'w', newline='') as f:
-        writer = csv.writer(f)
-        # 表头: Timestamp, CPU_0(group_0), CPU_64(group_0), ...
-        headers = ["timestamp"] + [f"CPU_{cid}({target_cpus_map[cid]})" for cid in target_cpu_list]
-        writer.writerow(headers)
-        
-        # 3. 循环记录
-        while not stop_event.is_set():
-            try:
-                # 获取当前所有核的使用率 (interval=1 表示阻塞1秒统计一次)
-                # 注意：这会阻塞线程1秒，正好作为采样间隔
-                all_cpus_percent = psutil.cpu_percent(interval=1, percpu=True)
-                
-                row = [time.time()]
-                for cid in target_cpu_list:
-                    # 防止越界（比如 allocated 了核64，但机器只有 32 核的虚拟环境）
-                    if cid < len(all_cpus_percent):
-                        row.append(all_cpus_percent[cid])
-                    else:
-                        row.append(-1) # 标记无效核
-                
-                writer.writerow(row)
-                f.flush() # 实时刷入磁盘
-            except Exception as e:
-                print(f"[MONITOR] Error: {e}")
-                break
-    print(f"[MONITOR] Monitoring stopped.")
-"""
- 
-# --- 新增辅助函数：直接从内核读取磁盘加权时间 ---
-def get_disk_weighted_time(target_disk):
-    """
-    读取 /proc/diskstats 获取指定磁盘的 weighted_time_spent_doing_io (ms)。
-    这是计算 aqu-sz 的必要原始数据，psutil 通常不提供。
-    """
-    try:
-        with open('/proc/diskstats', 'r') as f:
-            for line in f:
-                parts = line.split()
-                # /proc/diskstats 格式通常为:
-                # major minor name ... (从第4列开始是统计数据)
-                # 0:reads, 1:merged, 2:sectors, 3:time_reading,
-                # 4:writes, 5:merged, 6:sectors, 7:time_writing,
-                # 8:inflight, 9:io_ticks(busy_time), 10:time_in_queue(weighted_time)
-                if len(parts) >= 14 and parts[2] == target_disk:
-                    # 返回第 14 列 (索引 13)，即 weighted time
-                    return int(parts[13])
-    except Exception:
-        pass
-    return 0
-
-def find_procs_by_name(name_keyword):
-    """辅助函数：根据名字查找进程对象"""
-    procs = []
-    for p in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            if name_keyword in p.info['name'] or \
-               (p.info['cmdline'] and any(name_keyword in s for s in p.info['cmdline'])):
-                procs.append(p)
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            pass
-    return procs
-
-def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv", target_disk="sda"):
+def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv"):
     print(f"[MONITOR] Starting monitor (w_await, aqu-sz), saving to {filename}...")
     
     # 1. 优化 CPU 列排序 (同组紧邻)
@@ -851,52 +544,16 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv", tar
             for cid in cpu_ids:
                 ordered_cpu_list.append((cid, group_name))
     
-    # 2. 查找 Controller 进程
-    controller_proc = None
-    py_procs = find_procs_by_name("controller.py")
-    if py_procs:
-        controller_proc = py_procs[0]
-        print(f"[MONITOR] Found Controller PID: {controller_proc.pid}")
-    else:
-        print("[MONITOR] Controller process not found.")
-
     # 3. 初始化 CSV
     with open(filename, 'w', newline='') as f:
         writer = csv.writer(f)
         
         # --- 构建表头 ---
         headers = ["timestamp"]
-        
-        # A. CPU 列
         for cid, gname in ordered_cpu_list:
-            headers.append(f"CPU_{cid}({gname})")
-            
-        # B. 磁盘列 (已移除 Read，新增 w_await, aqu-sz)
-        headers.extend([
-            f"{target_disk}_Write_MB/s", 
-            f"{target_disk}_w_await",  # 新增: 平均写等待时间
-            f"{target_disk}_aqu-sz",   # 新增: 平均队列长度
-            f"{target_disk}_%util"
-        ])
-        
-        # C. Controller CPU
-        headers.append("Controller_CPU%")
-        
+            headers.append(f"CPU_{cid}({gname})") 
         writer.writerow(headers)
         
-        # --- 4. 初始化计数器 ---
-        # Psutil 计数器 (用于 Write MB/s, w_await, %util)
-        try:
-            last_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
-        except Exception:
-            last_disk_stats = None
-
-        # 内核原始计数器 (用于 aqu-sz)
-        last_weighted_time = get_disk_weighted_time(target_disk)
-
-        if last_disk_stats is None:
-            print(f"[WARN] Target disk '{target_disk}' not found! Disk metrics will be 0.")
-
         last_time = time.time()
 
         # --- 5. 循环采样 ---
@@ -919,59 +576,6 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv", tar
                         row.append(all_cpus[cid])
                     else:
                         row.append(-1)
-                
-                # B. 获取磁盘数据
-                curr_disk_stats = psutil.disk_io_counters(perdisk=True).get(target_disk)
-                curr_weighted_time = get_disk_weighted_time(target_disk)
-                
-                if curr_disk_stats and last_disk_stats:
-                    # 1. Write MB/s
-                    write_mb = (curr_disk_stats.write_bytes - last_disk_stats.write_bytes) / 1024 / 1024 / time_delta
-                    
-                    # 2. w_await Calculation
-                    # w_await = (Delta Write Time) / (Delta Write Count)
-                    delta_w_time = curr_disk_stats.write_time - last_disk_stats.write_time
-                    delta_w_count = curr_disk_stats.write_count - last_disk_stats.write_count
-                    if delta_w_count > 0:
-                        w_await = delta_w_time / delta_w_count
-                    else:
-                        w_await = 0.0
-                    
-                    # 3. aqu-sz Calculation
-                    # aqu-sz = (Delta Weighted Time in ms) / (Delta Time in ms)
-                    delta_weighted = curr_weighted_time - last_weighted_time
-                    delta_time_ms = time_delta * 1000.0
-                    if delta_time_ms > 0:
-                        aqu_sz = delta_weighted / delta_time_ms
-                    else:
-                        aqu_sz = 0.0
-                    
-                    # 4. %util Calculation
-                    delta_busy = curr_disk_stats.busy_time - last_disk_stats.busy_time
-                    util_percent = (delta_busy / delta_time_ms) * 100.0
-                    util_percent = max(0.0, min(100.0, util_percent)) # 限制在 0-100
-                    
-                    row.extend([
-                        f"{write_mb:.2f}", 
-                        f"{w_await:.2f}", 
-                        f"{aqu_sz:.2f}", 
-                        f"{util_percent:.2f}"
-                    ])
-                else:
-                    row.extend([0, 0, 0, 0])
-                
-                # 更新计数器
-                last_disk_stats = curr_disk_stats
-                last_weighted_time = curr_weighted_time
-
-                # C. Controller CPU
-                ctrl_cpu = 0
-                if controller_proc:
-                    try:
-                        ctrl_cpu = controller_proc.cpu_percent(interval=None)
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        controller_proc = None
-                row.append(f"{ctrl_cpu:.1f}")
 
                 writer.writerow(row)
                 f.flush()
@@ -981,7 +585,83 @@ def monitor_system(stop_event, cgroup_configs, filename="system_metric.csv", tar
                 print(f"[MONITOR] Error: {e}")
                 break
     print("[MONITOR] Monitoring stopped.")
+
+# -------------------------------------------------------------------------
+# Part 4: 数据清理与辅助函数
+# -------------------------------------------------------------------------
+def cleanup_workflow_data():
+    """清理工作流产生的中间数据（Redis + CouchDB）"""
+    print("\n[INFO] === Cleaning up workflow intermediate data ===")
     
+    # 1. 清理 Redis 中的工作流相关 key
+    if redis_client:
+        try:
+            # 获取所有 key 并过滤出工作流相关的
+            all_keys = redis_client.keys('*')
+            workflow_patterns = [
+                'req-*', 'warmup-*', 'sys-*', 'const_target_*',
+                '*video*', '*recognizer*', '*svd*', '*wordcount*',
+                '*split*', '*transcode*', '*merge*', '*upload*',
+                '*adult*', '*violence*', '*extract*', '*censor*',
+                '*translate*', '*mosaic*', '*compute*', '*count*'
+            ]
+            
+            keys_to_delete = []
+            for key in all_keys:
+                # 检查是否匹配工作流模式
+                for pattern in workflow_patterns:
+                    import fnmatch
+                    if fnmatch.fnmatch(key, pattern):
+                        keys_to_delete.append(key)
+                        break
+            
+            if keys_to_delete:
+                # 批量删除
+                deleted = redis_client.delete(*keys_to_delete)
+                print(f"[INFO] Deleted {deleted} workflow keys from Redis")
+            else:
+                print(f"[INFO] No workflow keys found in Redis (total keys: {len(all_keys)})")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup Redis: {e}")
+    
+    # 2. 清理 CouchDB 中的 faas_data 数据库
+    if init_couchdb_client():
+        try:
+            import couchdb
+            if 'faas_data' in couchdb_client:
+                db = couchdb_client['faas_data']
+                doc_count = 0
+                docs_to_delete = []
+                
+                # 收集所有文档
+                for doc_id in db:
+                    # 跳过设计文档
+                    if not doc_id.startswith('_'):
+                        doc = db[doc_id]
+                        docs_to_delete.append({'_id': doc_id, '_rev': doc['_rev'], '_deleted': True})
+                        doc_count += 1
+                
+                # 批量删除
+                if docs_to_delete:
+                    db.update(docs_to_delete)
+                    print(f"[INFO] Deleted {doc_count} documents from CouchDB faas_data database")
+                else:
+                    print(f"[INFO] No documents found in CouchDB faas_data database")
+            else:
+                print(f"[INFO] CouchDB faas_data database does not exist, nothing to clean")
+        except Exception as e:
+            print(f"[WARN] Failed to cleanup CouchDB: {e}")
+    
+    print("[INFO] === Cleanup completed ===")
+    
+def first_item(val):
+    """提取列表首元素或直接返回值。"""
+    if isinstance(val, list) and val:
+        return val[0]
+    return val
+
+
+
 def main():
     global CGROUP_CONFIGS, FUNC_TO_GROUP
     
@@ -991,17 +671,11 @@ def main():
     print(f"Random Seed: {RANDOM_SEED}")
     print()
     
-    # 基于task_groups.json生成cgroup配置
+    # 获得CGROUP_CONFIGS（基于task_groups.json生成cgroup配置）
     print(f"[INFO] Generating cgroup configurations from {TASK_GROUPS_FILE}...")
-    CGROUP_CONFIGS = generate_cgroups_from_task_groups(TASK_GROUPS_FILE, NUMA_NODE, CGROUP_PARENT)
-    
-    cleanup_previous_cgroups()
-    
-    # === 新增：先初始化父组 ===
-    init_parent_cgroup(NUMA_NODE) 
-    # ========================
-    
-    # 构建函数到分组的映射
+    CGROUP_CONFIGS = generate_cgroups_from_task_groups(TASK_GROUPS_FILE, NUMA_NODE)
+
+    # 获得FUNC_TO_GROUP（构建函数到分组的映射）
     for group_name, group_config in CGROUP_CONFIGS.items():
         if 'functions' in group_config:
             for func_name in group_config['functions']:
@@ -1009,12 +683,9 @@ def main():
                 if group_name.startswith('group_'):
                     group_id = int(group_name.split('_')[1])
                     FUNC_TO_GROUP[func_name] = group_id
-    
-    # 创建子组cgroup
-    print("[INFO] Setting up cgroups...")
-    for group_name, config in CGROUP_CONFIGS.items():
-        # 调用修正后的 ensure_cgroup
-        ensure_cgroup(config['path'], config['cpus'], config['mems'])
+                    
+    # 在开始任何请求之前，先把配置推送到 Controller
+    init_controller_managers(CGROUP_CONFIGS, FUNC_TO_GROUP)
         
     # 预热工作流缓存, 固定各子函数输入
     init_redis_client()
@@ -1078,7 +749,7 @@ def main():
                     client_configs.append((func_name, payload))
                     group_clients_count[group_id] += 1
     """
-    
+    """
     # 将每组 client 数量补满
     random.seed(RANDOM_SEED)
     for group_name, config in CGROUP_CONFIGS.items():
@@ -1123,7 +794,7 @@ def main():
                 client_configs.append((func_name, payload))
                 group_clients_count[group_id] += 1
     
-    
+    """
     num_clients = len(client_configs)
     # 统计：按是否来自 SIMPLE_ACTIONS 或工作流缓存分类
     simple_count = len([c for c in client_configs if c[0] in SIMPLE_ACTIONS])
@@ -1139,11 +810,10 @@ def main():
     
     import threading
     monitor_stop_event = threading.Event()
-    # 使用新的 monitor_system_full 函数
     monitor_thread = threading.Thread(
         target=monitor_system,
         # 参数: event, cgroup配置, 文件名, 目标磁盘
-        args=(monitor_stop_event, CGROUP_CONFIGS, "system_metrics.csv", "sda")
+        args=(monitor_stop_event, CGROUP_CONFIGS, "system_metrics.csv")
     )
     monitor_thread.daemon = True
     monitor_thread.start()

@@ -74,7 +74,6 @@ class ActionRunner:
             action_context["store"] = None
 
         # 3&4. 执行代码并运行 main（统一计时：exec + main 的总时间）
-        func_start = time.time()
         try:
             if not self.compiled_code:
                 # 如果没有编译代码（说明 init 没跑或失败了），尝试现场补救（仅限简单情况）或报错
@@ -84,7 +83,9 @@ class ActionRunner:
         except Exception as e:
             print(f"[Proxy] Execution Error: {e}")
             return {"error": str(e), "traceback": traceback.format_exc()}
-
+        
+        func_start = time.time()
+        
         # 运行 main 函数
         func_result = None
         if 'main' in action_context and callable(action_context['main']):
@@ -95,12 +96,12 @@ class ActionRunner:
                 return {"error": str(e), "traceback": traceback.format_exc()}
         
         func_end = time.time()
-        func_duration = func_end - func_start  # exec + main 的总执行时间
+        func_duration = func_end - func_start
 
         # 5. 构造返回
         response = {
             "func_result": func_result,
-            "workdir_used": env_workdir,
+            #"workdir_used": env_workdir,
             "func_duration": func_duration  # 纯函数执行时间（秒）
         }
         
