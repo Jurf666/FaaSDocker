@@ -1,3 +1,4 @@
+import random
 import docker
 import time
 import threading
@@ -58,22 +59,65 @@ class FunctionManager:
         container_name = f"{self.function_name}-{os.urandom(4).hex()}"
         try:
             print(f"Creating new container '{container_name}' ...")
-
             # --- 准备 docker run 的参数 ---
             run_kwargs = {
                 "detach": True,# 后台运行
                 "ports": {f"{self.container_port}/tcp": None}, # 重要：Value为None表示让Docker随机分配宿主机端口
                 "name": container_name,
-                "nano_cpus": 200000000,# 限制容器只能使用 0.2 个 CPU 核的算力
+                "cpu_period": 100000,    # CPU 调度周期，单位微秒 (通常设为 100ms)
+                "cpu_quota": 20000,      # 周期内允许使用的时长 (20ms / 100ms = 0.2 CPU)
             }
+            '''
+            # =========== 允许跨物理核与逻辑核心 ===========
             if self.cpuset_cpus:
-                run_kwargs['cpuset_cpus'] = self.cpuset_cpus  # <--- 关键修改：原生绑核
+                run_kwargs['cpuset_cpus'] = self.cpuset_cpus
+            # =========== 结束 ===========
+            '''
+            # =========== 不允许跨物理核，允许跨逻辑核 ===========
+            final_cpuset = self.cpuset_cpus # 默认为传入的原始配置
+
+            if self.cpuset_cpus:
+                try:
+                    # 将字符串配置转换为列表，例如 "0,1,2..." -> [0, 1, 2...]
+                    cpu_list = [int(x) for x in self.cpuset_cpus.split(',') if x.strip()]
+                    
+                    # 判定：如果可用核数 > 2，视为 Baseline (大池子模式)
+                    # 实验组通常只有 2 个核 (如 "0,64")，不会进入此分支
+                    if len(cpu_list) > 2:
+                        # 筛选出物理核 (0-63)，排除逻辑核以便后续配对
+                        # 注意：这里硬编码了你的机器架构 (0-63 为物理核)
+                        physical_cores = [c for c in cpu_list if c < 64]
+                        
+                        if physical_cores:
+                            # 1. 随机选中一个物理核
+                            chosen_phy = random.choice(physical_cores)
+                            
+                            # 2. 计算其超线程兄弟 (偏移量 64)
+                            sibling = chosen_phy + 64
+                            # 3. 构造新的绑定字符串 "物理核,兄弟核"
+                            # 确保兄弟核也在允许列表中
+                            if sibling in cpu_list:
+                                final_cpuset = f"{chosen_phy},{sibling}"
+                            else:
+                                final_cpuset = f"{chosen_phy}"
+                            
+                            final_cpuset = f"{chosen_phy}"
+                            print(f"[Affinity] Baseline detected. Pinning {container_name} to {final_cpuset}")
+                except Exception as e:
+                    print(f"[Affinity] Error generating random cpuset: {e}")
+
+            # 将最终决定的 cpuset 写入参数
+            if final_cpuset:
+                run_kwargs['cpuset_cpus'] = final_cpuset
+            # =========== 结束 ===========
+
             # --- 调用 Docker API 启动容器 ---
             container = self.docker_client.containers.run( #
                 self.image_name,
                 **run_kwargs# 展开参数字典
             )
             print(f"Created container id={container.id:12}")
+          
         except docker.errors.ImageNotFound:
             print(f"Error: Image '{self.image_name}' not found.")
             return None

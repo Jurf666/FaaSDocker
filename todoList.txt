@@ -1,5 +1,0 @@
-①确认一下controller的时间限制问题
-②写一个脚本，用于触发各种工作流/action 10次，并且要求不可以有数据因为竞争而导致污染，10次的数据都保存在perf_logs下各个acion对应的目录中
-③写另外一个脚本，读取各个action的10个数据文件，取平均的同时过滤指标，最后生成一个汇总的指标文件summary.json
-④写最后一个脚本grouping.py，利用summary.json进行实际的分组，并设法计算得分来判断分组效果
-⑤对controller与function_manager进行完善与修改
