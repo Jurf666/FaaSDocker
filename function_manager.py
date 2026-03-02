@@ -64,7 +64,8 @@ class FunctionManager:
                 "detach": True,# 后台运行
                 "ports": {f"{self.container_port}/tcp": None}, # 重要：Value为None表示让Docker随机分配宿主机端口
                 "name": container_name,
-                "nano_cpus": 200000000,# 限制容器只能使用 0.2 个 CPU 核的算力
+                "cpu_period": 100000,  # CPU 调度周期：100ms (100000 微秒)
+                "cpu_quota": 20000,    # CPU 配额：20ms，即 0.2 个 CPU 核 (20000/100000 = 0.2)
             }
             if self.cpuset_cpus:
                 run_kwargs['cpuset_cpus'] = self.cpuset_cpus  # <--- 关键修改：原生绑核

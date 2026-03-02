@@ -37,6 +37,7 @@ app = Flask(__name__)
 
 function_managers = {}
 manager_lock = threading.Lock()
+all_managers_ever_created = []  # 记录所有创建过的 manager，用于退出时清理
 redis_client = None
 couch_db = None
 
@@ -160,13 +161,15 @@ def get_or_create_manager(function_name,cpuset_cpus=None):
         # 双重检查：防止在等待锁的过程中已经被别的线程创建了
         if function_name not in function_managers:
             # 统一在这里配置镜像名、端口等参数
-            function_managers[function_name] = FunctionManager(
+            new_manager = FunctionManager(
                 function_name=function_name,
                 image_name='yyxie-test2',
                 container_port=5000, 
-                min_idle_containers=2,  # 每个函数保持 2 个空闲容器
+                min_idle_containers=4,  # 每个函数保持 2 个空闲容器
                 cpuset_cpus=cpuset_cpus
             )
+            function_managers[function_name] = new_manager
+            all_managers_ever_created.append(new_manager)  # 记录所有创建过的 manager
         return function_managers[function_name]
 
 # -------------------------------------------------------------------------
@@ -403,9 +406,19 @@ def save_result(db_key, filename):
         logger.error(f"[Save] Error: {e}")
     
 def clean_up():
+    """
+    清理所有容器，包括那些已经从 function_managers 字典中删除的
+    """
     logger.info("Stopping all containers...")
     with manager_lock:
-        for m in function_managers.values(): m.stop_all_containers()
+        # 使用 set 去重，避免重复清理同一个 manager
+        unique_managers = set(all_managers_ever_created)
+        for manager in unique_managers:
+            try:
+                manager.stop_all_containers()
+                logger.info(f"Cleaned up manager: {manager.function_name}")
+            except Exception as e:
+                logger.error(f"Error cleaning up manager: {e}")
 
 # -------------------------------------------------------------------------
 # Part 4: 核心HTTP 接口
@@ -422,6 +435,98 @@ def create_manager():
     else:
         get_or_create_manager(function_name,cpuset_cpus=cpuset_cpus)
         return jsonify({"status": "created"}), 201
+
+@app.route('/clear_managers', methods=['POST'])
+def clear_managers():
+    """清空所有 FunctionManager，用于对比实验时重置状态"""
+    with manager_lock:
+        num_managers = len(function_managers)
+        logger.info(f"Clearing {num_managers} function managers...")
+        
+        # 停止并清理所有现有的 FunctionManager
+        for func_name, manager in function_managers.items():
+            try:
+                manager.stop_all_containers()  # 停止所有容器
+                logger.info(f"Stopped all containers for {func_name}")
+            except Exception as e:
+                logger.error(f"Error stopping containers for {func_name}: {e}")
+        
+        function_managers.clear()
+        logger.info(f"All {num_managers} FunctionManagers cleared from active dict")
+    
+    return jsonify({
+        "status": "cleared", 
+        "message": f"Cleared {num_managers} function managers. Containers will be cleaned up on exit."
+    }), 200
+
+@app.route('/reset_controller', methods=['POST'])
+def reset_controller():
+    """
+    彻底重置 Controller 状态，用于对比实验中不同配置之间的切换
+    清理：
+    1. 所有 FunctionManager
+    2. 所有任务状态
+    3. Redis 中遗留的临时数据
+    4. 全局历史列表（防止文件描述符泄漏）
+    """
+    global function_managers, task_status_store, all_managers_ever_created
+    
+    with manager_lock:
+        with task_store_lock:
+            logger.info("=" * 60)
+            logger.info("RESET CONTROLLER STATE")
+            logger.info("=" * 60)
+            
+            # 1. 停止所有容器
+            num_managers = len(function_managers)
+            for func_name, manager in list(function_managers.items()):
+                try:
+                    manager.stop_all_containers()
+                    logger.info(f"  ✓ Stopped containers for {func_name}")
+                except Exception as e:
+                    logger.error(f"  ✗ Error stopping {func_name}: {e}")
+            
+            function_managers.clear()
+            logger.info(f"  ✓ Cleared {num_managers} function managers")
+            
+            # 2. 清空任务状态
+            num_tasks = len(task_status_store)
+            task_status_store.clear()
+            logger.info(f"  ✓ Cleared {num_tasks} task statuses")
+            
+            # 3. 清空历史 manager 列表（防止文件描述符泄漏）
+            num_historical = len(all_managers_ever_created)
+            all_managers_ever_created.clear()
+            logger.info(f"  ✓ Cleared {num_historical} historical manager references")
+            
+            # 4. 清理 Redis 临时数据
+            if redis_client:
+                try:
+                    # 获取所有 key 并清理以下前缀的数据：
+                    # - const_* : 常量
+                    # - sys-* : 系统临时数据
+                    # - report-* : 报告数据
+                    # - LIST_REF: 列表引用（实际上是 value 中的前缀）
+                    patterns = ['const_*', 'sys-*', 'report-*', 'target_*', 'merge-list-*', 'wc-list-*', 'svd-list-*']
+                    for pattern in patterns:
+                        keys_to_delete = redis_client.keys(pattern)
+                        if keys_to_delete:
+                            redis_client.delete(*keys_to_delete)
+                            logger.info(f"  ✓ Cleaned Redis pattern: {pattern} ({len(keys_to_delete)} keys)")
+                except Exception as e:
+                    logger.error(f"  ✗ Error cleaning Redis: {e}")
+            
+            logger.info("=" * 60)
+            logger.info("CONTROLLER RESET COMPLETE")
+            logger.info("=" * 60)
+    
+    return jsonify({
+        "status": "reset",
+        "message": "Controller state fully reset. All containers, tasks, and temp data cleared.",
+        "managers_cleared": num_managers,
+        "tasks_cleared": num_tasks,
+        "historical_refs_cleared": num_historical
+    }), 200
 
 @app.route('/dispatch_workflow', methods=['POST'])
 def dispatch_workflow():

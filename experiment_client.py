@@ -22,6 +22,18 @@ class ExperimentClient:
         self.controller_url = controller_url
         self.perf_data = defaultdict(list)
         self.data_lock = threading.Lock()
+        
+        # 创建 HTTP Session 以重用连接，减少文件描述符使用
+        self.session = requests.Session()
+        # 配置连接池参数
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=50,  # 连接池大小
+            pool_maxsize=200,     # 最大连接数
+            max_retries=3,        # 重试次数
+            pool_block=False      # 非阻塞模式
+        )
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
     
     def dispatch_simple(self, func_name, payload, request_id):
         """
@@ -37,7 +49,7 @@ class ExperimentClient:
         """
         start_time = time.time()
         try:
-            resp = requests.post(
+            resp = self.session.post(  # 使用 session 而不是 requests
                 f"{self.controller_url}/dispatch/{func_name}",
                 json=payload,
                 timeout=1200
@@ -245,7 +257,7 @@ class ExperimentClient:
                 cpuset = cgroup_configs[group_name]['cpus']
             
             try:
-                resp = requests.post(
+                resp = self.session.post(  # 使用 session 而不是 requests
                     f"{self.controller_url}/create_manager",
                     json={
                         "function_name": func_name,
@@ -259,3 +271,9 @@ class ExperimentClient:
                     print(f"   > Init {func_name}: Failed {resp.text}")
             except Exception as e:
                 print(f"   > Init {func_name}: Error {e}")
+    
+    def close(self):
+        """关闭 HTTP Session，释放连接资源"""
+        if hasattr(self, 'session'):
+            self.session.close()
+            print("[INFO] Closed HTTP session and released connections")

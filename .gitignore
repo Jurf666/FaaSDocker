@@ -19,3 +19,4 @@ setup-docker-auto-cleanup.sh
 README_COMPARE_JSON.md
 README_DOCKER_CLEANUP.md*.zip
 *.log
+requirements.txt

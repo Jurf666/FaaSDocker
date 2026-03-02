@@ -1,0 +1,92 @@
+#!/bin/bash
+
+# 对比脚本：baseline2_groups vs baseline3_groups
+# baseline2: 6个随机组，不允许跨核，配置逻辑核（128条）
+# baseline3: 6个随机组，不允许跨核，只配置物理核（64条）
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo "================================================================"
+echo "Comparing baseline2_groups vs baseline3_groups"
+echo "With Docker container cleanup between runs"
+echo "================================================================"
+
+mkdir -p comparison_results
+
+# ==================== ROUND 1: baseline2_groups ====================
+echo ""
+echo ">>> ROUND 1: baseline2_groups configuration (128 logical cores)"
+echo "========================================================================/"
+
+# Clean up Docker containers first
+echo "  [*] Cleaning up Docker containers..."
+docker rm -f $(docker ps -a -q --filter "name=.*-[a-f0-9]" 2>/dev/null) 2>/dev/null || true
+sleep 2
+
+# Reset Controller state
+echo "  [*] Resetting Controller state..."
+python3 << 'RESETPY'
+import requests, time
+try:
+    resp = requests.post("http://127.0.0.1:5001/reset_controller", timeout=10)
+    if resp.status_code == 200:
+        data = resp.json()
+        print(f"  [✓] Controller reset: {data.get('managers_cleared', 0)} managers cleared")
+    else:
+        print(f"  [!] Reset failed: {resp.status_code}")
+except Exception as e:
+    print(f"  [!] Error: {e}")
+time.sleep(2)
+RESETPY
+
+export TASK_GROUPS_FILE="baseline2_groups.json"
+export TEST_DURATION=300
+python3 run_experiment_closed_loop_refactored.py
+
+if [ -f "closed_loop_results/baseline2_groups_results_4clients.json" ]; then
+    cp closed_loop_results/baseline2_groups_results_4clients.json comparison_results/baseline2_vs_baseline3_b2.json
+    echo "✓ Saved"
+fi
+
+sleep 5
+echo ""
+
+# ==================== ROUND 2: baseline3_groups ====================
+echo ">>> ROUND 2: baseline3_groups configuration (64 physical cores only)"
+echo "========================================================================/"
+
+# Clean up Docker containers first
+echo "  [*] Cleaning up Docker containers..."
+docker rm -f $(docker ps -a -q --filter "name=.*-[a-f0-9]" 2>/dev/null) 2>/dev/null || true
+sleep 2
+
+# Reset Controller state
+echo "  [*] Resetting Controller state..."
+python3 << 'RESETPY'
+import requests, time
+try:
+    resp = requests.post("http://127.0.0.1:5001/reset_controller", timeout=10)
+    if resp.status_code == 200:
+        data = resp.json()
+        print(f"  [✓] Controller reset: {data.get('managers_cleared', 0)} managers cleared")
+    else:
+        print(f"  [!] Reset failed: {resp.status_code}")
+except Exception as e:
+    print(f"  [!] Error: {e}")
+time.sleep(2)
+RESETPY
+
+export TASK_GROUPS_FILE="baseline3_groups.json"
+export TEST_DURATION=300
+python3 run_experiment_closed_loop_refactored.py
+
+if [ -f "closed_loop_results/baseline3_groups_results_4clients.json" ]; then
+    cp closed_loop_results/baseline3_groups_results_4clients.json comparison_results/baseline2_vs_baseline3_b3.json
+    echo "✓ Saved"
+fi
+
+echo ""
+echo "✓ Comparison complete!"

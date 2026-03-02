@@ -10,16 +10,18 @@ from collections import defaultdict
 class CgroupManager:
     """管理 cgroup 配置生成和查询"""
     
-    def __init__(self, task_groups_file, numa_node=0):
+    def __init__(self, task_groups_file, numa_node=0, physical_cores_only=False):
         """
         初始化 CgroupManager
         
         Args:
             task_groups_file: 任务分组配置文件路径
             numa_node: NUMA 节点号 (0 或 1)
+            physical_cores_only: 是否只使用物理核（不使用超线程/逻辑核）
         """
         self.task_groups_file = task_groups_file
         self.numa_node = numa_node
+        self.physical_cores_only = physical_cores_only
         self.cgroup_configs = {}
         self.func_to_group = {}
         
@@ -57,9 +59,10 @@ class CgroupManager:
         
         for group_id in sorted(groups.keys()):
             funcs_in_group = groups[group_id]
-            total_clients = len(funcs_in_group) * 2  # 每个函数 2 个 client
+            total_clients = len(funcs_in_group) * 4  # 每个函数 4 个 client
             
             # 判断是否为 baseline 实验
+            '''
             is_baseline = (len(groups) == 1) or ('baseline' in self.task_groups_file)
             
             if is_baseline:
@@ -71,6 +74,10 @@ class CgroupManager:
                 cpus_needed = math.ceil(total_clients / 5.0)
                 if cpus_needed % 2 != 0:
                     cpus_needed += 1
+            '''
+            cpus_needed = math.ceil(total_clients / 5.0)
+            if cpus_needed % 2 != 0:
+                cpus_needed += 1
             
             # 分配 CPU
             cpus_list = []
@@ -101,10 +108,21 @@ class CgroupManager:
             return [(i, i + 64) for i in range(1, 64, 2)]
     
     def _flatten_cpu_pairs(self, cpu_pairs):
-        """展开 CPU 对为扁平列表"""
+        """
+        展开 CPU 对为扁平列表
+        
+        如果 physical_cores_only=True，只返回物理核（每对中的第一个）
+        否则返回物理核+逻辑核
+        """
         all_cpus = []
-        for a, b in cpu_pairs:
-            all_cpus.extend([a, b])
+        if self.physical_cores_only:
+            # 只使用物理核
+            for a, b in cpu_pairs:
+                all_cpus.append(a)
+        else:
+            # 使用物理核+逻辑核
+            for a, b in cpu_pairs:
+                all_cpus.extend([a, b])
         return all_cpus
     
     def _build_func_to_group_mapping(self):

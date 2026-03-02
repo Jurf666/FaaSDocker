@@ -22,8 +22,9 @@ CONTROLLER_URL = f"http://{CONTROLLER_HOST}:{CONTROLLER_PORT}"
 
 TEST_DURATION = int(os.environ.get('TEST_DURATION', '300'))
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))
-NUMA_NODE = int(os.environ.get('NUMA_NODE', '1'))
-TASK_GROUPS_FILE = 'task_groups.json'
+NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))
+TASK_GROUPS_FILE = os.environ.get('TASK_GROUPS_FILE', 'task_groups.json')
+CLIENTS_PER_FUNCTION = int(os.environ.get('CLIENTS_PER_FUNCTION', '4'))
 
 REDIS_HOST = os.environ.get('REDIS_HOST', '172.17.0.1')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', '6379'))
@@ -61,6 +62,7 @@ class ClosedLoopExperiment:
         self.experiment_client = ExperimentClient(CONTROLLER_URL)
         self.data_cleaner = DataCleaner(REDIS_HOST, REDIS_PORT, COUCHDB_URL)
         self.system_monitor = None
+        self.num_clients_created = 0  # 记录实际创建的 client 总数
         
     def setup(self):
         """设置实验环境"""
@@ -104,8 +106,8 @@ class ClosedLoopExperiment:
             else:
                 payload_src = {}
             
-            # 每个函数创建 2 个 client
-            for _ in range(2):
+            # 每个函数创建固定数量 client
+            for _ in range(CLIENTS_PER_FUNCTION):
                 payload_copy = payload_src.copy() if isinstance(payload_src, dict) else {}
                 client_configs.append((func_name, payload_copy))
         
@@ -113,6 +115,8 @@ class ClosedLoopExperiment:
         num_clients = len(client_configs)
         simple_count = len([c for c in client_configs if c[0] in SIMPLE_ACTIONS])
         workflow_count = num_clients - simple_count
+        
+        self.num_clients_created = num_clients  # 保存实际创建的 client 总数
         
         print(f"[INFO] Launching {num_clients} clients:")
         print(f"       - {simple_count} simple function clients")
@@ -155,7 +159,7 @@ class ClosedLoopExperiment:
         output = {
             "config": {
                 "test_duration": TEST_DURATION,
-                "num_clients": len(self.experiment_client.get_perf_data()),
+                "num_clients": self.num_clients_created,  # 使用实际创建的 client 总数
                 "numa_node": NUMA_NODE,
                 "random_seed": RANDOM_SEED,
                 "test_mode": "closed_loop"
@@ -167,7 +171,10 @@ class ClosedLoopExperiment:
         # 生成结果文件名
         base_name = os.path.splitext(TASK_GROUPS_FILE)[0]
         os.makedirs('closed_loop_results', exist_ok=True)
-        output_file = os.path.join('closed_loop_results', f"{base_name}_results.json")
+        output_file = os.path.join(
+            'closed_loop_results',
+            f"{base_name}_results_{CLIENTS_PER_FUNCTION}clients.json"
+        )
         
         with open(output_file, 'w') as f:
             json.dump(output, f, indent=2)
@@ -176,7 +183,10 @@ class ClosedLoopExperiment:
     
     def cleanup(self):
         """清理实验产生的中间数据"""
+        # 清理工作流数据
         self.data_cleaner.cleanup_all()
+        # 关闭 HTTP 连接
+        self.experiment_client.close()
 
 
 def main():
