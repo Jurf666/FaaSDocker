@@ -68,7 +68,7 @@ def wait_for_warmup(func_to_group):
                     # 检查是否达标
                     if idle_count < TARGET_IDLE_CONTAINERS:
                         all_ready = False
-                        pending_funcs.append(f"{func_name}({idle_count}/{TARGET_IDLE_CONTAINERS})")
+                        pending.append(f"{func_name}({idle_count}/{TARGET_IDLE_CONTAINERS})")
                 else:
                     # 如果查询失败，保守起见认为没准备好
                     all_ready = False

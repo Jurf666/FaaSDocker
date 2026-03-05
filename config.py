@@ -8,7 +8,7 @@ NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))
 CLIENTS_PER_FUNCTION = int(os.environ.get('CLIENTS_PER_FUNC', '4'))
 
 # 文件路径
-TASK_GROUPS_FILE = os.environ.get('TASK_GROUPS_FILE', 'baseline_groups.json')
+TASK_GROUPS_FILE = os.environ.get('TASK_GROUPS_FILE', 'task_groups.json')
 REFERENCE_GROUPS_FILE = 'task_groups.json'
 
 # 服务端地址

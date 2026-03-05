@@ -35,7 +35,7 @@ def main():
     # 3. 初始化连接和工作流缓存
     redis_client = init_redis_client()
     couchdb_client = init_couchdb_client()
-    workflow_caches = prepare_workflow_caches(redis_client)
+    workflow_caches = prepare_workflow_caches(redis_client,couchdb_client)
     
     # 4. 生成客户端配置
     client_configs = []
