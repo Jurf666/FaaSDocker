@@ -48,12 +48,14 @@ class Dispatcher:
         request_id = f"req-{uuid.uuid4().hex[:8]}"
         manager = self.get_or_create_manager(function_name)
         container_id = None
+        selected_cpuset = None
 
         try:
             # 1. 获取容器
             host_port, container_id = manager.get_container_for_request()
             if not host_port:
                 raise Exception(f"No container available for {function_name}")
+            selected_cpuset = manager.apply_request_affinity(container_id)
 
             # 2. 构造 Payload (还原原始 controller.py 的逻辑)
             # 关键差异：工作流模式下，参数被包裹在 input_mapping 中
@@ -108,7 +110,8 @@ class Dispatcher:
             out.setdefault('__meta__', {})
             out['__meta__'].update({
                 'container_id': container_id,
-                'duration': duration_from_proxy
+                'duration': duration_from_proxy,
+                'cpuset': selected_cpuset
             })
             return out
 
