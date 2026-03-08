@@ -2,7 +2,7 @@
 import redis
 import couchdb
 import requests
-from config import REDIS_HOST, REDIS_PORT, COUCHDB_URL, CONTROLLER_URL,TARGET_IDLE_CONTAINERS
+from config import REDIS_HOST, REDIS_PORT, COUCHDB_URL, CONTROLLER_URL,TARGET_CONTAINERS
 
 def init_redis_client():
     """初始化Redis连接"""
@@ -42,7 +42,7 @@ def init_controller_managers(cgroup_configs, func_to_group):
         try:
             resp = requests.post(
                 f"{CONTROLLER_URL}/create_manager",
-                json={"function_name": func_name, "cpuset_cpus": cpuset ,"min_idle_containers": TARGET_IDLE_CONTAINERS},
+                json={"function_name": func_name, "cpuset_cpus": cpuset},
                 timeout=5
             )
             status = "OK" if resp.status_code in [200, 201] else f"Failed ({resp.text})"
@@ -51,32 +51,61 @@ def init_controller_managers(cgroup_configs, func_to_group):
             print(f"   > Init {func_name}: Error {e}")
 
 def wait_for_warmup(func_to_group):
-    """等轮询 Controller，直到所有涉及的函数的 idle 容器数量达到目标值"""
-    print(f"\n[INFO] Waiting for {TARGET_IDLE_CONTAINERS} idle containers per function...")
-    # 获取所有需要监控的函数名
+    """等待所有函数容器达到目标规模：先保证 total，再保证 idle。"""
+    # ===== [Warmup增强开始] =====
+    # 详细注释：
+    # 1) 先检查 total（总容器数）是否达到目标；
+    # 2) total 不足时，主动调用 Controller 的 ensure_warmup 接口触发补容器；
+    # 3) total 达标后，再检查 idle，确保容器已经可用于请求。
+    print(f"\n[INFO] Waiting for {TARGET_CONTAINERS} containers per function...")
     all_funcs = list(func_to_group.keys())
+
     while True:
         all_ready = True
         pending = []
         for func_name in all_funcs:
             try:
-                # 调用 Controller 提供的查询接口
                 resp = requests.get(f"{CONTROLLER_URL}/manager_status/{func_name}", timeout=2)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    idle_count = data.get("idle", 0)
-                    # 检查是否达标
-                    if idle_count < TARGET_IDLE_CONTAINERS:
-                        all_ready = False
-                        pending.append(f"{func_name}({idle_count}/{TARGET_IDLE_CONTAINERS})")
-                else:
-                    # 如果查询失败，保守起见认为没准备好
+                if resp.status_code != 200:
                     all_ready = False
-            except Exception:
+                    pending.append(f"{func_name}(status={resp.status_code})")
+                    continue
+
+                data = resp.json()
+                total_count = data.get("total", 0)
+
+                # 总容器数不足时，立刻触发服务端补齐。
+                if total_count < TARGET_CONTAINERS:
+                    all_ready = False
+                    pending.append(f"{func_name}(total={total_count}/{TARGET_CONTAINERS})")
+                    try:
+                        # ===== [适配 Warmup 异步化 + 去重 改造开始] =====
+                        # 关键说明：
+                        # 1) 服务端 ensure_warmup 现在会“快速返回 202”，后台异步补容器；
+                        # 2) 202 是“请求已接收/已去重复用在途任务”的正常状态，不应再按失败处理；
+                        # 3) 客户端继续依赖 manager_status(total/idle) 轮询判断是否真正预热完成。
+                        ensure_resp = requests.post(
+                            f"{CONTROLLER_URL}/ensure_warmup/{func_name}",
+                            json={"target_total_containers": TARGET_CONTAINERS},
+                            timeout=8
+                        )
+                        if ensure_resp.status_code not in [200, 202]:
+                            print(f"[WARN] ensure_warmup {func_name} failed: {ensure_resp.status_code}")
+                        # ===== [适配 Warmup 异步化 + 去重 改造结束] =====
+                    except Exception as e:
+                        print(f"[WARN] ensure_warmup {func_name} exception: {e}")
+                    continue
+
+            except Exception as e:
                 all_ready = False
+                pending.append(f"{func_name}(status=exception)")
+                print(f"[WARN] manager_status {func_name} exception: {e}")
+
         if all_ready:
             print("[INFO] All function containers are warmed up and ready!")
             break
+
         print(f"   ... Waiting for: {', '.join(pending[:5])} ...")
         import time
         time.sleep(2)
+    # ===== [Warmup增强结束] =====

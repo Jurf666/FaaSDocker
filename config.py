@@ -5,10 +5,10 @@ import os
 TEST_DURATION = int(os.environ.get('TEST_DURATION', '600'))
 RANDOM_SEED = int(os.environ.get('RANDOM_SEED', '42'))
 NUMA_NODE = int(os.environ.get('NUMA_NODE', '0'))
-CLIENTS_PER_FUNCTION = int(os.environ.get('CLIENTS_PER_FUNC', '4'))
+CLIENTS_PER_FUNCTION = int(os.environ.get('CLIENTS_PER_FUNCTION', '4'))
 
 # 文件路径
-TASK_GROUPS_FILE = os.environ.get('TASK_GROUPS_FILE', 'task_groups.json')
+TASK_GROUPS_FILE = os.environ.get('TASK_GROUPS_FILE', 'baseline_groups.json')
 REFERENCE_GROUPS_FILE = 'task_groups.json'
 
 # 服务端地址
@@ -45,4 +45,4 @@ WORKFLOW_CACHE_PATTERNS = [
     '*adult*', '*violence*', '*extract*', '*censor*',
     '*translate*', '*mosaic*', '*compute*', '*count*'
 ]
-TARGET_IDLE_CONTAINERS = 4
+TARGET_CONTAINERS = 4
