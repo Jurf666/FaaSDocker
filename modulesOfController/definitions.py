@@ -8,14 +8,18 @@ logger = logging.getLogger("Workflows")
 # 辅助函数：标准化 dispatch 调用
 def call_action(dispatcher, name, payload):
     res= dispatcher.dispatch_sync(name, payload, is_workflow=True)
+    # 【修复标记-元数据结构兼容】
+    # dispatch_sync 当前把运行元数据放在 __meta__ 下；
+    # 这里同时兼容历史结构（直接放在 res['container_id']/res['duration']），避免 KeyError。
+    meta_from_res = res.get('__meta__', {}) if isinstance(res, dict) else {}
     # 构造 metadata 供前端/日志查看
     meta = {
-        'container_id': res['container_id'],
-        'duration': res['duration']
+        'container_id': meta_from_res.get('container_id', res.get('container_id') if isinstance(res, dict) else None),
+        'duration': meta_from_res.get('duration', res.get('duration') if isinstance(res, dict) else None)
     }
     return res, meta
 
-def workflow_video(dispatcher, data_store, video_path):
+def workflow_video(dispatcher, data_store, payload=None):
     logger.info("=== Starting Video Workflow ===")
     if not data_store.redis_client: 
         raise Exception("Redis not connected")
@@ -23,7 +27,10 @@ def workflow_video(dispatcher, data_store, video_path):
     subtasks = [] # 收集所有子任务元数据
     
     # Upload
-    upload_out, meta = call_action(dispatcher, "video_upload", {})
+    # 【修复标记-函数签名对齐】
+    # workflow_engine 会把 payload 作为第三个参数传入，这里显式兼容；
+    # 若上层不传 payload，则回退为 {}，保持历史行为不变。
+    upload_out, meta = call_action(dispatcher, "video_upload", payload or {})
     subtasks.append({'name': 'video_upload', **meta})
     
     video_key = upload_out['video'][0]
@@ -67,14 +74,16 @@ def workflow_video(dispatcher, data_store, video_path):
     
     return subtasks
 
-def workflow_recognizer(dispatcher, data_store, img_path):
+def workflow_recognizer(dispatcher, data_store, payload=None):
     logger.info("=== Starting Recognizer Workflow ===")
     if not data_store.redis_client: raise Exception("Redis not connected")
 
     subtasks = []
     
     # 1. Upload
-    upload_out, meta = call_action(dispatcher, "recognizer_upload", {})
+    # 【修复标记-函数签名对齐】
+    # 同 video：兼容 workflow_engine 透传 payload 的调用方式。
+    upload_out, meta = call_action(dispatcher, "recognizer_upload", payload or {})
     subtasks.append({'name': 'recognizer_upload', **meta})
     img_key = upload_out['img'][0]
         

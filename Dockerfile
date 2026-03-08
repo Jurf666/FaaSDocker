@@ -41,17 +41,12 @@ COPY sources/test.png /proxy/
 # 为 WordCount 准备文本目录
 COPY sources/book.txt /text/book.txt
 
-# (可选) 复制您的模型文件，如果它们在本地的话
-# COPY models/ /proxy/models/
-
 WORKDIR /proxy/exec
 EXPOSE 5000
 
 # ----------------------------------------------------------------------
 # 4. 安装 Python 依赖
 # ----------------------------------------------------------------------
-# 复制 requirements.txt (推荐) 或直接安装 (如下)
-# 我们只安装 proxy 和 actions 明确需要的包
 RUN pip install --no-cache-dir \
     gevent \
     flask \

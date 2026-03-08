@@ -12,7 +12,7 @@ class Dispatcher:
         self.function_managers = {}
         self.manager_lock = threading.Lock()
 
-    def get_or_create_manager(self, function_name, cpuset_cpus=None,min_idle_containers = 1):
+    def get_or_create_manager(self, function_name, cpuset_cpus=None):
         """
         线程安全地获取 FunctionManager，如果不存在则使用默认配置创建。
         """
@@ -29,7 +29,6 @@ class Dispatcher:
                     function_name=function_name,
                     image_name='yyxie-test2',
                     container_port=5000, 
-                    min_idle_containers=min_idle_containers,
                     cpuset_cpus=cpuset_cpus
                 )
             return self.function_managers[function_name]

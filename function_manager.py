@@ -6,7 +6,7 @@ import os
 import requests
 
 class FunctionManager:
-    def __init__(self, function_name, image_name, container_port,  host_port_start=8000, idle_timeout=300, min_idle_containers=4,cpuset_cpus=None):
+    def __init__(self, function_name, image_name, container_port,  host_port_start=8000, idle_timeout=300, min_idle_containers=0,cpuset_cpus=None):
         self.function_name = function_name
         self.image_name = image_name
         self.container_port = container_port
@@ -101,7 +101,7 @@ class FunctionManager:
                             else:
                                 final_cpuset = f"{chosen_phy}"
                             
-                            final_cpuset = f"{chosen_phy}"
+                            #final_cpuset = f"{chosen_phy}"
                             print(f"[Affinity] Baseline detected. Pinning {container_name} to {final_cpuset}")
                 except Exception as e:
                     print(f"[Affinity] Error generating random cpuset: {e}")
@@ -219,6 +219,58 @@ class FunctionManager:
                 self.containers[container_id]["last_active"] = time.time()
                 print(f"Container {container_id[:12]} for {self.function_name} released and set to idle.")
 
+    # ===== [Warmup增强开始] =====
+    def ensure_min_total_containers(self, target_total):
+        """
+        主动补齐当前函数的总容器数到 target_total。
+        详细说明：
+        1) 该方法只创建缺口容器，不做删除；
+        2) 供 wait_for_warmup 在启动前即时触发，减少等待 keeper 周期；
+        3) 返回创建统计，方便上层日志与排查。
+        """
+        # 入参容错，避免非法值导致 warmup 中断。
+        try:
+            target_total = int(target_total)
+        except (TypeError, ValueError):
+            try:
+                target_total = int(self.min_idle_containers)
+            except (TypeError, ValueError):
+                target_total = 0
+
+        if target_total < 0:
+            target_total = 0
+
+        # 统计在锁内完成，创建在锁外完成，避免长时间持锁影响正常请求分配。
+        with self.lock:
+            current_total = sum(
+                1 for d in self.containers.values()
+                if d["container_obj"].status == 'running'
+            )
+
+        missing = max(0, target_total - current_total)
+        created = 0
+        for _ in range(missing):
+            # 如果管理器进入停止流程，则立即中止补齐。
+            if self._cleaner_stop_event.is_set():
+                break
+            cid = self._create_new_container()
+            if cid:
+                created += 1
+
+        with self.lock:
+            final_total = sum(
+                1 for d in self.containers.values()
+                if d["container_obj"].status == 'running'
+            )
+
+        return {
+            "target_total": target_total,
+            "current_total": current_total,
+            "created": created,
+            "final_total": final_total
+        }
+    # ===== [Warmup增强结束] =====
+
     """
     删除容器（物理删除）
     """
@@ -245,93 +297,83 @@ class FunctionManager:
                 if container_id in self.containers:
                     del self.containers[container_id]
 
+    def _run_keeper_once(self):
+        """
+        Keeper 单次周期：仅负责补足空闲池，不做任何回收动作。
+        """
+        # 详细注释：先算缺口，再在锁外创建，避免长时间持锁阻塞 dispatch 路径。
+        to_create = 0
+        with self.lock:
+            current_idle_count = sum(
+                1 for data in self.containers.values()
+                if data["status"] == "idle" and data["container_obj"].status == 'running'
+            )
+            if current_idle_count < self.min_idle_containers:
+                to_create = self.min_idle_containers - current_idle_count
+                print(f"[Keeper] Pool low ({current_idle_count}/{self.min_idle_containers}). Creating {to_create} containers.")
+
+        for _ in range(to_create):
+            if self._cleaner_stop_event.is_set():
+                break
+            try:
+                self._create_new_container()
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"[Keeper] Error creating container: {e}")
+
+    def _run_cleaner_once(self, current_time, last_cleanup_time, cleanup_interval):
+        """
+        Cleaner 单次周期：按超时与冗余规则回收容器。
+        :return: 更新后的 last_cleanup_time
+        """
+        if current_time - last_cleanup_time <= cleanup_interval:
+            return last_cleanup_time
+
+        containers_to_remove = []
+        with self.lock:
+            # 详细注释：先筛 idle，再按 last_active 从旧到新排序，优先回收最久未使用的容器。
+            idle_candidates = []
+            for cid, data in list(self.containers.items()):
+                if data["status"] == "idle" and data["container_obj"].status == 'running':
+                    idle_candidates.append((cid, data))
+
+            idle_candidates.sort(key=lambda item: item[1]["last_active"])
+
+            for i, (container_id, data) in enumerate(idle_candidates):
+                num_idle_after = len(idle_candidates) - i
+                is_redundant = num_idle_after > self.min_idle_containers
+                is_timeout = (current_time - data["last_active"]) > self.idle_timeout
+                if is_redundant and is_timeout:
+                    containers_to_remove.append((container_id, data["container_obj"]))
+                else:
+                    break
+
+        if containers_to_remove:
+            print(f"[Cleaner] Found {len(containers_to_remove)} expired containers. Removing...")
+
+        for container_id, container_obj in containers_to_remove:
+            if self._cleaner_stop_event.is_set():
+                break
+            try:
+                self._remove_container(container_id, container_obj)
+            except Exception as e:
+                print(f"[Cleaner] Error removing {container_id[:12]}: {e}")
+
+        return time.time()
+    
     """
     后台清理与预热：这是一个死循环线程，负责维护容器池的健康。
     """
     def _run_cleaner(self):
-        """
-        后台守护线程：【分频】执行预热与清理。
-        策略：
-        1. 预热 (Keeper 逻辑): 每 5 秒执行一次 (高频，保证库存)。
-        2. 清理 (Cleaner 逻辑): 每 30 秒执行一次 (低频，节省性能)。
-        """
-        # 基础心跳间隔 (Keeper 的频率)
-        TICK_INTERVAL = 5 
-        # 清理的时间阈值
+        # 详细注释：调度器只负责“分频触发”，具体逻辑拆分到 keeper/cleaner 单次函数中。
+        TICK_INTERVAL = 5
         CLEANUP_INTERVAL = 30
-        
-        last_cleanup_time = 0 # 上次清理的时间戳
+        last_cleanup_time = 0
 
         while not self._cleaner_stop_event.is_set():
             current_time = time.time()
-            
-            # ===============================================================
-            # 任务一：预热 (高频：每 5s 必做)
-            # ===============================================================
-            to_create = 0
-            with self.lock:
-                current_idle_count = sum(
-                    1 for data in self.containers.values()
-                    if data["status"] == "idle" and data["container_obj"].status == 'running'
-                )
-                if current_idle_count < self.min_idle_containers:
-                    to_create = self.min_idle_containers - current_idle_count
-                    print(f"[Keeper] Pool low ({current_idle_count}/{self.min_idle_containers}). Creating {to_create} containers.")
-
-            for _ in range(to_create):
-                if self._cleaner_stop_event.is_set(): break
-                try:
-                    self._create_new_container()
-                    time.sleep(0.1)
-                except Exception as e:
-                    print(f"[Keeper] Error creating container: {e}")
-
-            # ===============================================================
-            # 任务二：清理 (低频：每 30s 做一次)
-            # ===============================================================
-            # 检查：距离上次清理是否已经过了 30 秒？
-            if current_time - last_cleanup_time > CLEANUP_INTERVAL:
-                # print("[Cleaner] 30s interval reached. Checking for idle containers...")
-                containers_to_remove = []
-                
-                with self.lock:
-                    # 1. 筛选 idle 容器
-                    idle_candidates = []
-                    for cid, data in list(self.containers.items()):
-                        if data["status"] == "idle" and data["container_obj"].status == 'running':
-                            idle_candidates.append((cid, data))
-                    
-                    # 2. 按最后活跃时间排序 (最老的在前)
-                    idle_candidates.sort(key=lambda item: item[1]["last_active"])
-
-                    # 3. 标记需要删除的
-                    for i, (container_id, data) in enumerate(idle_candidates):
-                        num_idle_after = len(idle_candidates) - i
-                        is_redundant = num_idle_after > self.min_idle_containers
-                        is_timeout = (current_time - data["last_active"]) > self.idle_timeout
-
-                        if is_redundant and is_timeout:
-                            containers_to_remove.append((container_id, data["container_obj"]))
-                        else:
-                            break # 后面的肯定更不满足，跳出
-                
-                # 执行删除
-                if containers_to_remove:
-                    print(f"[Cleaner] Found {len(containers_to_remove)} expired containers. Removing...")
-                
-                for container_id, container_obj in containers_to_remove:
-                    if self._cleaner_stop_event.is_set(): break
-                    try:
-                        self._remove_container(container_id, container_obj)
-                    except Exception as e:
-                        print(f"[Cleaner] Error removing {container_id[:12]}: {e}")
-                
-                # 更新清理时间戳
-                last_cleanup_time = time.time()
-
-            # ===============================================================
-            # 休眠 (等待下一个 5s 心跳)
-            # ===============================================================
+            self._run_keeper_once()
+            last_cleanup_time = self._run_cleaner_once(current_time, last_cleanup_time, CLEANUP_INTERVAL)
             self._cleaner_stop_event.wait(timeout=TICK_INTERVAL)
 
     """
@@ -350,3 +392,4 @@ class FunctionManager:
         for container_id, data in containers_to_stop:
             self._remove_container(container_id, data["container_obj"])
         print(f"All containers for {self.function_name} stopped and removed.")
+   

@@ -13,13 +13,17 @@ COUCHDB_URL = os.environ.get('COUCHDB_URL', 'http://openwhisk:openwhisk@172.17.0
 
 # 阈值：超过 32KB 的数据存入 CouchDB，否则存 Redis
 LARGE_DATA_THRESHOLD = 32 * 1024 
+# 【修复标记-小二进制Redis编码】
+# decode_responses=True 的 Redis 客户端对原始 bytes 不安全，
+# 小二进制统一使用 Base64 文本 + 前缀落在 Redis，fetch 时再还原为 bytes。
+REDIS_OCTET_B64_PREFIX = "B64_OCTET:"
 
 class Store:
     def __init__(self, request_id, input_mapping):
         """
         初始化 Store
-        :param request_id: 当前请求的唯一 ID (用于生成 Key)
-        :param input_mapping: 字典，告诉 Store 输入参数对应的数据库 Key
+        :request_id: 当前请求的唯一 ID (用于生成 Key)
+        :input_mapping: 字典，告诉 Store 输入参数对应的数据库 Key
                               例如: {'video': 'req-101_split_output_0'}
         """
         self.request_id = request_id
@@ -44,8 +48,8 @@ class Store:
     def fetch(self, keys):
         """
         获取数据 (支持批量)
-        :param keys: 列表，例如 ['video', 'segment_time']
-        :return: 字典，例如 {'video': b'...', 'segment_time': 10}
+        keys: 列表，例如 ['video', 'segment_time']
+        return一个字典，例如 {'video': b'...', 'segment_time': 10}
         """
         result = {}
         for key_name in keys:
@@ -80,6 +84,11 @@ class Store:
                     if val and val.startswith("COUCH_REF:"):
                         cid = val.split(":", 1)[1]
                         data_list.append(self._fetch_from_couch(cid))
+                    # 【修复标记-小二进制Redis解码】
+                    # LIST_REF 里的每个元素也可能是 B64_OCTET 前缀编码的二进制数据。
+                    elif isinstance(val, str) and val.startswith(REDIS_OCTET_B64_PREFIX):
+                        b64_payload = val[len(REDIS_OCTET_B64_PREFIX):]
+                        data_list.append(base64.b64decode(b64_payload.encode('ascii')))
                     else:
                         try:
                             data_list.append(json.loads(val))
@@ -92,6 +101,11 @@ class Store:
             elif redis_val.startswith("COUCH_REF:"):
                 couch_doc_id = redis_val.split(":", 1)[1]
                 result[key_name] = self._fetch_from_couch(couch_doc_id)
+            # 【修复标记-小二进制Redis解码】
+            # 非 LIST_REF 直读路径也要支持 Base64 前缀还原。
+            elif isinstance(redis_val, str) and redis_val.startswith(REDIS_OCTET_B64_PREFIX):
+                b64_payload = redis_val[len(REDIS_OCTET_B64_PREFIX):]
+                result[key_name] = base64.b64decode(b64_payload.encode('ascii'))
             else:
                 # 尝试解析 JSON，如果失败则作为普通字符串/数字返回
                 try:
@@ -109,7 +123,17 @@ class Store:
             # 假设附件名固定为 'data'
             attachment = self.couch_db.get_attachment(doc, 'data')
             if attachment:
-                return attachment.read() # 返回 bytes
+                raw_bytes = attachment.read()
+                # 【修复标记-Couch返回类型统一】
+                # json 类型在写入时是 json.dumps 文本，这里应恢复为 Python 对象；
+                # octet 类型保持 bytes，避免破坏二进制处理链路。
+                if doc.get('type') == 'json':
+                    try:
+                        return json.loads(raw_bytes.decode('utf-8'))
+                    except Exception:
+                        # 兜底：即便反序列化失败，也返回原始文本，避免 silent data loss。
+                        return raw_bytes.decode('utf-8', errors='replace')
+                return raw_bytes # 返回 bytes
             return None
         except Exception as e:
             print(f"[Store] CouchDB fetch error: {e}")
@@ -118,9 +142,9 @@ class Store:
     def post(self, key, value, datatype='json'):
         """
         上传数据
-        :param key: 输出数据的名称 (例如 'transcoded_video')
-        :param value: 数据内容 (bytes, str, int, dict, list)
-        :param datatype: 'json' 或 'octet' (二进制流)
+        :key: 输出数据的名称 (例如 'transcoded_video')
+        :value: 数据内容 (bytes, str, int, dict, list)
+        :datatype: 'json' 或 'octet' (二进制流)
         :return: 实际存储在 Redis 中的 Key (Controller 需要这个 Key 传给下一个 Action)
         """
         # 内部维护一个计数器，处理同名 Key 的多次输出 (用于 Generator 模式)
@@ -140,7 +164,6 @@ class Store:
         db_key = f"{self.request_id}_{key}_{index}"
         
         data_size = 0
-        is_large = False
         
         # 1. 预处理数据
         if datatype == 'octet' or isinstance(value, bytes):
@@ -191,7 +214,10 @@ class Store:
                      # 极小的二进制(如hash)存 Redis。
                      # 为防编码问题，建议凡是 'octet' 类型直接走 CouchDB 逻辑，或者在此处 Base64。
                      # 这里采用：存入 Redis 字符串
-                     pass
+                     # 【修复标记-小二进制Redis编码】
+                     # 避免 decode_responses=True 客户端在读取时对 bytes 解码失败。
+                     b64_payload = base64.b64encode(value).decode('ascii')
+                     content_to_store = f"{REDIS_OCTET_B64_PREFIX}{b64_payload}"
                  
                  self.redis_client.set(db_key, content_to_store)
             else:
