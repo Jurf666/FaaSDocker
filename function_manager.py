@@ -3,10 +3,23 @@ import docker
 import time
 import threading
 import os
+import uuid
 import requests
 
 
 class FunctionManager:
+    # 全局请求级绑核状态（按 cpuset 池分组）
+    # 目标：
+    # 仅保证运行时不重叠：同一逻辑核不会同时被多个请求占用。
+    # key: tuple(sorted_logical_cpus)
+    # val: {
+    #   "in_use": set(logical_cpu),
+    #   "leases": {lease_id: logical_cpu},
+    # }
+    _global_affinity_lock = threading.Lock()
+    _global_affinity_cond = threading.Condition(_global_affinity_lock)
+    _global_affinity_state = {}
+
     def __init__(
         self,
         function_name,
@@ -27,6 +40,9 @@ class FunctionManager:
         self._cpuset_cpu_list = self._parse_cpuset_list(cpuset_cpus)
         self._physical_candidates = sorted(c for c in self._cpuset_cpu_list if c < 64)
         self._is_baseline_pool = len(self._cpuset_cpu_list) > 2 and bool(self._physical_candidates)
+        self._baseline_pool_key = tuple(self._cpuset_cpu_list) if self._is_baseline_pool else None
+        # 实验组小池模式：在创建容器时按轮转方式把不同容器固定到不同逻辑核上。
+        self._next_dual_cpu_idx = 0
         self.docker_client = docker.from_env()
 
         # 核心容器池结构：
@@ -43,39 +59,144 @@ class FunctionManager:
 
     @staticmethod
     def _parse_cpuset_list(cpuset_cpus):
-        # 将字符串配置转换为有序列表，例如 "0,1,2..." -> [0, 1, 2...]
+        """
+        将cpu字符串配置转换为cpu列表
+        """
         if not cpuset_cpus:
             return []
         cpu_list = [int(x) for x in cpuset_cpus.split(',') if x.strip()]
         return sorted(cpu_list)
 
-    def _choose_request_cpuset(self):
+    def _choose_container_create_cpuset(self):
         """
-        Per-request affinity:
-        - baseline big-pool mode (>2 CPUs): random physical core (+ sibling if present)
-        - experiment/small pool mode: keep original cpuset
+        针对exp模式，用于1period2client条件下，容器创建时不重叠绑核心
+        容器创建时的绑核策略：
+        - 实验组：将容器拆分到这 2 个逻辑核
+        - 其他情况：沿用 manager 级别 cpuset
         """
+        if len(self._cpuset_cpu_list) == 2:
+            with self.lock:
+                idx = self._next_dual_cpu_idx % 2
+                self._next_dual_cpu_idx += 1
+            return str(self._cpuset_cpu_list[idx])
 
-        if not self._is_baseline_pool:
-            return None
+        return self.cpuset_cpus
 
-        chosen_phy = random.choice(self._physical_candidates)
-        sibling = chosen_phy + 64
-        if sibling in self._cpuset_cpu_list:
-            return f"{chosen_phy},{sibling}"
-        return str(chosen_phy)
+    def _acquire_request_cpuset_lease(self, request_id=None, wait_timeout=1200):
+        """
+        针对baseline模式，用于1period2client条件下，发送请求时随机不重叠绑核心
+        在 baseline 大池模式下申请一个“逻辑核租约”（lease）。同一逻辑核在被 release 前不会再次分配（运行时不重叠）。
+        返回：(chosen_cpuset, lease_id)
+        """
+        if not self._is_baseline_pool or not self._baseline_pool_key:
+            return None, None
+
+        deadline = None
+        if wait_timeout is not None:
+            try:
+                wait_timeout = float(wait_timeout)
+                if wait_timeout >= 0:
+                    deadline = time.time() + wait_timeout
+            except (TypeError, ValueError):
+                deadline = None
+
+        chosen_logical = None
+        lease_id = None
+
+        with FunctionManager._global_affinity_cond:
+            state = FunctionManager._global_affinity_state.get(self._baseline_pool_key)
+            if state is None:
+                state = {
+                    "in_use": set(),
+                    "leases": {},
+                }
+                FunctionManager._global_affinity_state[self._baseline_pool_key] = state
+            else:
+                # 兼容旧状态结构
+                state.setdefault("in_use", set())
+                state.setdefault("leases", {})
+
+            while True:
+                # 从池里挑一个当前未占用的逻辑核（随机）
+                free_cpus = [cpu for cpu in self._cpuset_cpu_list if cpu not in state["in_use"]]
+                if free_cpus:
+                    chosen_logical = random.choice(free_cpus)
+                    lease_id = f"lease-{uuid.uuid4().hex[:12]}"
+                    state["in_use"].add(chosen_logical)
+                    state["leases"][lease_id] = chosen_logical
+                    break
+
+                # 没有空闲逻辑核，等待其他请求 release
+                if deadline is not None:
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        return None, None
+                    FunctionManager._global_affinity_cond.wait(timeout=remaining)
+                else:
+                    FunctionManager._global_affinity_cond.wait()
+
+        print(
+            f"[Affinity] Lease acquired for {self.function_name} "
+            f"-> cpu={chosen_logical}, lease={lease_id}"
+        )
+        return str(chosen_logical), lease_id
+    
+    def release_request_affinity_lease(self, lease_id):
+        """释放请求级 affinity 租约，允许该逻辑核被后续请求复用。"""
+        if not lease_id or not self._is_baseline_pool or not self._baseline_pool_key:
+            return
+
+        with FunctionManager._global_affinity_cond:
+            state = FunctionManager._global_affinity_state.get(self._baseline_pool_key)
+            if not state:
+                return
+
+            leases = state.get("leases", {})
+            in_use = state.get("in_use", set())
+            logical_cpu = leases.pop(lease_id, None)
+            if logical_cpu is None:
+                return
+
+            in_use.discard(logical_cpu)
+            # 唤醒等待核资源的请求
+            FunctionManager._global_affinity_cond.notify_all()
+
+        print(
+            f"[Affinity] Lease released for {self.function_name} "
+            f"lease={lease_id} cpu={logical_cpu}"
+        )
 
 
-    def apply_request_affinity(self, container_id):
-        """Apply affinity before each request and return selected cpuset."""
-        chosen_cpuset = self._choose_request_cpuset()
+    def apply_request_affinity(self, container_id, request_id=None, wait_timeout=1200):
+        """
+        在请求发送前应用 affinity。
+          - baseline：返回租约绑定的单逻辑核 cpuset + lease_id
+          - 其他情况：返回容器固定 cpuset + None
+        """
+        chosen_cpuset, lease_id = self._acquire_request_cpuset_lease(
+            request_id=request_id,
+            wait_timeout=wait_timeout,
+        )
         if not chosen_cpuset:
-            return None
+            if self._is_baseline_pool:
+                print(
+                    f"[Affinity] No logical CPU lease available for {self.function_name} "
+                    f"within timeout={wait_timeout}s"
+                )
+                return None, None
+            with self.lock:
+                data = self.containers.get(container_id)
+                if not data:
+                    return None, None
+                # 对于非“请求级绑核”模式，返回容器固定 cpuset
+                # （没有时回退到 manager cpuset），便于在 __meta__ 中观测。
+                return data.get("fixed_cpuset") or self.cpuset_cpus, None
 
         with self.lock:
             data = self.containers.get(container_id)
             if not data:
-                return None
+                self.release_request_affinity_lease(lease_id)
+                return None, None
             container_obj = data["container_obj"]
 
         try:
@@ -87,10 +208,11 @@ class FunctionManager:
                 f"[Affinity] Request-level pinning for {self.function_name} "
                 f"{container_id[:12]} -> {chosen_cpuset}"
             )
-            return chosen_cpuset
+            return chosen_cpuset, lease_id
         except Exception as e:
+            self.release_request_affinity_lease(lease_id)
             print(f"[Affinity] Failed to update cpuset for {container_id[:12]}: {e}")
-            return None
+            return None, None
 
     def _wait_for_container_service(self, host_port, timeout=30, check_interval=0.01):
         """轮询容器 /status 接口，直到服务就绪或超时。"""
@@ -120,16 +242,17 @@ class FunctionManager:
         container_name = f"{self.function_name}-{os.urandom(4).hex()}"
         try:
             print(f"Creating new container '{container_name}' ...")
+            create_cpuset = self._choose_container_create_cpuset()
             run_kwargs = {
                 "detach": True,
                 "ports": {f"{self.container_port}/tcp": None},
                 "name": container_name,
                 "cpu_period": 100000,
-                "cpu_quota": 20000,
+                "cpu_quota": 100000,
             }
             
-            if self.cpuset_cpus:
-                run_kwargs['cpuset_cpus'] = self.cpuset_cpus
+            if create_cpuset:
+                run_kwargs['cpuset_cpus'] = create_cpuset
 
             container = self.docker_client.containers.run(
                 self.image_name,
@@ -202,6 +325,7 @@ class FunctionManager:
                 "status": "idle",
                 "last_active": time.time(),
                 "host_port": host_port,
+                "fixed_cpuset": create_cpuset,
             }
 
         print(
