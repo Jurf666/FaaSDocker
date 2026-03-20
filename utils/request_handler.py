@@ -1,19 +1,12 @@
 # utils/request_handler.py
-import time
 import threading
+import time
 from collections import defaultdict
 
 from config import CONTROLLER_URL, SIMPLE_ACTIONS
 
-# ===== [修改标记-主因3] =====
-# 原始代码（注释化）：
-# perf_data = defaultdict(list)
-# data_lock = threading.Lock()
-# 修改后：
-# 1) 继续保留 perf_data（仅成功请求时延）
-# 2) 新增 request_counters（尝试/成功/失败分类）
-# 3) 为 run.py 提供 failure_rate 与失败分类统计所需数据
-perf_data = defaultdict(list)
+# Metrics
+perf_data = defaultdict(list)  # success-only latency samples (seconds)
 request_counters = defaultdict(
     lambda: {
         "attempt": 0,
@@ -24,17 +17,52 @@ request_counters = defaultdict(
         "exception_fail": 0,
     }
 )
+
+# Per-invocation samples for same-core overlap analysis
+# Time source is runner.run() internal exec+main interval.
+execution_samples = []
+
 data_lock = threading.Lock()
 
 
 def _inc_counter(func_name, key, delta=1):
-    """线程安全地增加计数器。"""
     with data_lock:
         request_counters[func_name][key] += delta
 
 
+def _normalize_core_list(core_val):
+    if core_val is None:
+        return []
+    if isinstance(core_val, (list, tuple, set)):
+        raw = core_val
+    else:
+        raw = [core_val]
+
+    out = []
+    for item in raw:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _to_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ns_to_seconds(value):
+    v = _to_int(value)
+    if v is None:
+        return None
+    return v / 1_000_000_000.0
+
+
 def dispatch_simple(func_name, payload, request_id, is_workflow=False):
-    """发送请求并记录统计。"""
+    """Dispatch one request and collect metrics."""
     import requests
 
     _inc_counter(func_name, "attempt")
@@ -56,21 +84,35 @@ def dispatch_simple(func_name, payload, request_id, is_workflow=False):
         data = resp.json()
         out = data.get("output", {})
         meta = out.get("__meta__", {}) if isinstance(out, dict) else {}
-        duration = meta.get("duration")
+        duration = meta.get("duration")  # seconds, exec+main
 
-        # ===== [修改标记-主因3] =====
-        # 原始代码（注释化）：
-        # if duration and duration > 0 and 'error' not in out:
-        #     perf_data[func_name].append(duration)
-        # return out
-        # 修改后：
-        # - 成功：记录 perf_data 并 success +1
-        # - 逻辑失败：HTTP=200 但返回 error 或 duration 无效
         has_logic_error = isinstance(out, dict) and ("error" in out)
         if duration and duration > 0 and (not has_logic_error):
+            start_ns = _to_int(meta.get("func_main_start_ns"))
+            end_ns = _to_int(meta.get("func_main_end_ns"))
+            duration_ns = _to_int(meta.get("func_duration_ns"))
+
             with data_lock:
                 perf_data[func_name].append(duration)
                 request_counters[func_name]["success"] += 1
+
+                execution_samples.append(
+                    {
+                        "client_request_id": request_id,
+                        "server_request_id": meta.get("request_id"),
+                        "function_name": func_name,
+                        "container_id": meta.get("container_id"),
+                        "cpuset": meta.get("cpuset"),
+                        "physical_cores": _normalize_core_list(meta.get("physical_cores")),
+                        "start_ns": start_ns,
+                        "end_ns": end_ns,
+                        "duration_ns": duration_ns,
+                        # fallback fields for analyzer compatibility
+                        "start_time": _ns_to_seconds(start_ns),
+                        "end_time": _ns_to_seconds(end_ns),
+                        "duration": duration,
+                    }
+                )
             return out
 
         _inc_counter(func_name, "logic_fail")
@@ -91,7 +133,7 @@ def dispatch_simple(func_name, payload, request_id, is_workflow=False):
 
 
 def client_worker(client_id, func_name, payload, end_time):
-    """单个客户端线程循环。"""
+    """Worker loop for one client thread."""
     request_counter = 0
     is_workflow = func_name not in SIMPLE_ACTIONS
 
@@ -107,25 +149,22 @@ def client_worker(client_id, func_name, payload, end_time):
 
 
 def get_perf_data():
-    """返回成功请求时延样本。"""
     with data_lock:
         return {func: list(times) for func, times in perf_data.items()}
 
 
 def get_request_counters():
-    """返回请求计数器快照。"""
     with data_lock:
         return {func: dict(counter) for func, counter in request_counters.items()}
 
 
+def get_execution_samples():
+    with data_lock:
+        return [dict(item) for item in execution_samples]
+
+
 def clear_perf_data():
-    """清空时延样本与计数器。"""
-    # ===== [修改标记-主因2 + 主因3] =====
-    # 原始代码（注释化）：
-    # with data_lock:
-    #     perf_data.clear()
-    # 修改后：同时清空 perf_data + request_counters
-    # 目的：保证 warmup 后进入正式压测时统计窗口是干净的
     with data_lock:
         perf_data.clear()
         request_counters.clear()
+        execution_samples.clear()
