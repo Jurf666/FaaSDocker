@@ -20,10 +20,170 @@ from utils.request_handler import (
     clear_perf_data,
     client_worker,
     get_execution_samples,
+    get_metric_data,
     get_perf_data,
     get_request_counters,
 )
 from utils.workflow_utils import cleanup_workflow_data, prepare_workflow_caches
+
+
+METRIC_LABELS = {
+    "effective_cpu_time_s": "effective exec+main cpu",
+    "container_cpu_time_s": "container/cgroup cpu",
+    "process_cpu_time_s": "proxy process cpu",
+    "cycle_time_s": "closed-loop cycle",
+    "cgroup_nr_periods": "cgroup nr_periods",
+    "cgroup_nr_throttled": "cgroup nr_throttled",
+    "cgroup_throttled_time_s": "cgroup throttled time",
+    "cgroup_throttle_ratio": "cgroup throttle ratio",
+}
+
+CPU_METRIC_NOTES = {
+    "effective_cpu_time_s_mean": "Preferred CPU metric: container/cgroup CPU delta if available, otherwise proxy process CPU delta.",
+    "container_cpu_time_s_mean": "CPU usage delta of the whole container/cgroup during exec+main; includes child processes.",
+    "process_cpu_time_s_mean": "CPU time delta of the proxy Python process only; may undercount subprocess-heavy actions.",
+}
+
+METRIC_SCHEMA = {
+    "statistics": {
+        "mean": {
+            "meaning": "Success-only exec+main wall-clock mean.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "std": {
+            "meaning": "Success-only exec+main wall-clock standard deviation.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "cv": {
+            "meaning": "Success-only exec+main wall-clock coefficient of variation.",
+            "unit": "ratio",
+            "success_only": True,
+        },
+        "p90": {
+            "meaning": "Success-only exec+main wall-clock p90.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "p95": {
+            "meaning": "Success-only exec+main wall-clock p95.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "p99": {
+            "meaning": "Success-only exec+main wall-clock p99.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "effective_cpu_time_s_mean": {
+            "meaning": "Preferred CPU mean: container/cgroup CPU delta if available, otherwise proxy process CPU delta.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "container_cpu_time_s_mean": {
+            "meaning": "Whole-container/cgroup CPU usage mean during exec+main; includes child processes.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "process_cpu_time_s_mean": {
+            "meaning": "Proxy-process CPU usage mean during exec+main; may undercount subprocess-heavy actions.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "cycle_time_s_mean": {
+            "meaning": "Mean interval between consecutive request-send timestamps from the same client worker.",
+            "unit": "seconds",
+            "success_only": False,
+        },
+        "cgroup_nr_periods_mean": {
+            "meaning": "Mean cgroup CPU periods delta observed during exec+main.",
+            "unit": "count",
+            "success_only": True,
+        },
+        "cgroup_nr_throttled_mean": {
+            "meaning": "Mean throttled periods delta observed during exec+main.",
+            "unit": "count",
+            "success_only": True,
+        },
+        "cgroup_throttled_time_s_mean": {
+            "meaning": "Mean cgroup throttled time delta during exec+main.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "cgroup_throttle_ratio_mean": {
+            "meaning": "Mean ratio of throttled periods to total periods during exec+main.",
+            "unit": "ratio",
+            "success_only": True,
+        },
+    },
+    "execution_samples": {
+        "exec_wall_time_s": {
+            "meaning": "Per-invocation exec+main wall-clock time.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "exec_wall_time_ns": {
+            "meaning": "Per-invocation exec+main wall-clock time.",
+            "unit": "nanoseconds",
+            "success_only": True,
+        },
+        "effective_cpu_time_s": {
+            "meaning": "Per-invocation preferred CPU time: container/cgroup CPU delta if available, otherwise proxy process CPU delta.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "container_cpu_time_s": {
+            "meaning": "Per-invocation whole-container/cgroup CPU time; includes child processes.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "process_cpu_time_s": {
+            "meaning": "Per-invocation proxy-process CPU time only.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "cycle_time_s": {
+            "meaning": "Closed-loop interval between consecutive request sends from the same client worker.",
+            "unit": "seconds",
+            "success_only": False,
+        },
+        "cgroup_throttled_time_s": {
+            "meaning": "Per-invocation cgroup throttled time delta during exec+main.",
+            "unit": "seconds",
+            "success_only": True,
+        },
+        "cgroup_nr_throttled_delta": {
+            "meaning": "Per-invocation cgroup throttled periods delta during exec+main.",
+            "unit": "count",
+            "success_only": True,
+        },
+    },
+    "counters": {
+        "attempt": {"meaning": "Total client attempts.", "unit": "count"},
+        "success": {"meaning": "Successful requests with valid exec+main timing.", "unit": "count"},
+        "http_fail": {"meaning": "Requests failed with non-200 HTTP response.", "unit": "count"},
+        "logic_fail": {"meaning": "Requests returned 200 but had logical error payload or invalid timing.", "unit": "count"},
+        "timeout_fail": {"meaning": "Requests failed due to client timeout.", "unit": "count"},
+        "exception_fail": {"meaning": "Requests failed due to client-side exception.", "unit": "count"},
+    },
+}
+
+
+def _empty_stability():
+    return {
+        "count": 0,
+        "mean": 0.0,
+        "variance": 0.0,
+        "std": 0.0,
+        "cv": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "iqr": 0.0,
+        "p90": 0.0,
+        "p95": 0.0,
+        "p99": 0.0,
+    }
 
 
 def main():
@@ -60,6 +220,7 @@ def main():
     start_time = time.time()
     end_deadline = start_time + TEST_DURATION
 
+    '''
     try:
         requests.post(
             f"{CONTROLLER_URL}/start_monitor",
@@ -68,7 +229,8 @@ def main():
         )
     except Exception as e:
         print(f"[WARN] Failed to start monitor: {e}")
-
+    '''
+    
     executor = ThreadPoolExecutor(max_workers=len(client_configs))
     client_futures = []
     for idx, (func_name, payload) in enumerate(client_configs):
@@ -78,14 +240,17 @@ def main():
         future.result()
     executor.shutdown(wait=True)
 
+    '''
     try:
         requests.post(f"{CONTROLLER_URL}/stop_monitor", timeout=5)
     except Exception as e:
         print(f"[WARN] Failed to stop monitor: {e}")
-
+    '''
+    
     # 6) Aggregate base metrics
     total_time = time.time() - start_time
     perf_data = get_perf_data()
+    metric_data = get_metric_data()
     request_counters = get_request_counters()
     execution_samples = get_execution_samples()
     summary = generate_experiment_summary(perf_data, total_time)
@@ -97,22 +262,20 @@ def main():
     total_timeout_fail = 0
     total_exception_fail = 0
 
-    all_funcs = sorted(set(perf_data.keys()) | set(request_counters.keys()))
+    all_funcs = sorted(
+        set(perf_data.keys()) | set(metric_data.keys()) | set(request_counters.keys())
+    )
     stats = {}
     for func in all_funcs:
         times = perf_data.get(func, [])
-        stat = compute_stability(times) or {
-            "count": 0,
-            "mean": 0.0,
-            "variance": 0.0,
-            "std": 0.0,
-            "cv": 0.0,
-            "min": 0.0,
-            "max": 0.0,
-            "iqr": 0.0,
-            "p90": 0.0,
-            "p95": 0.0,
-        }
+        stat = compute_stability(times) or _empty_stability()
+        metric_stats = {}
+        metric_means = {}
+        for metric_name in METRIC_LABELS:
+            metric_values = metric_data.get(func, {}).get(metric_name, [])
+            metric_stat = compute_stability(metric_values) or _empty_stability()
+            metric_stats[metric_name] = metric_stat
+            metric_means[f"{metric_name}_mean"] = metric_stat["mean"]
 
         counter = request_counters.get(func, {})
         attempts = int(counter.get("attempt", 0))
@@ -134,6 +297,14 @@ def main():
                 "logic_fail": logic_fail,
                 "timeout_fail": timeout_fail,
                 "exception_fail": exception_fail,
+                **metric_means,
+                "exec_wall_time_stats": {k: stat[k] for k in _empty_stability().keys()},
+                "effective_cpu_time_stats": metric_stats["effective_cpu_time_s"],
+                "container_cpu_time_stats": metric_stats["container_cpu_time_s"],
+                "process_cpu_time_stats": metric_stats["process_cpu_time_s"],
+                "cycle_time_stats": metric_stats["cycle_time_s"],
+                "metric_means": metric_means,
+                "metric_stats": metric_stats,
             }
         )
         stats[func] = stat
@@ -146,6 +317,17 @@ def main():
         total_exception_fail += exception_fail
 
     total_failed = total_attempts - total_success
+    overall_metric_means = {}
+    for metric_name in METRIC_LABELS:
+        all_metric_values = []
+        for func_metric_map in metric_data.values():
+            all_metric_values.extend(func_metric_map.get(metric_name, []))
+        overall_metric_means[metric_name] = (
+            compute_stability(all_metric_values).get("mean", 0.0)
+            if all_metric_values
+            else 0.0
+        )
+
     summary.update(
         {
             "attempted_requests": total_attempts,
@@ -160,6 +342,9 @@ def main():
                 "timeout_fail": total_timeout_fail,
                 "exception_fail": total_exception_fail,
             },
+            "overall_metric_means": overall_metric_means,
+            "cpu_metric_notes": CPU_METRIC_NOTES,
+            "metric_schema": METRIC_SCHEMA,
         }
     )
 
@@ -176,6 +361,24 @@ def main():
         print(f"\n[{func}]")
         print(f"  Count: {stat['count']} | Mean: {stat['mean']:.6f}s | CV: {stat['cv']:.4f}")
         print(
+            "  exec+main CPU Mean: "
+            f"{stat['metric_means']['effective_cpu_time_s_mean']:.6f}s | "
+            "Container CPU Mean: "
+            f"{stat['metric_means']['container_cpu_time_s_mean']:.6f}s | "
+            "Process CPU Mean: "
+            f"{stat['metric_means']['process_cpu_time_s_mean']:.6f}s"
+        )
+        print(
+            "Closed-loop Cycle Mean: "
+            f"{stat['metric_means']['cycle_time_s_mean']:.6f}s"
+        )
+        print(
+            "  cgroup Throttled Mean: "
+            f"{stat['metric_means']['cgroup_throttled_time_s_mean']:.6f}s | "
+            "nr_throttled Mean: "
+            f"{stat['metric_means']['cgroup_nr_throttled_mean']:.4f}"
+        )
+        print(
             "  Attempts: {attempts} | Success: {success} | Failed: {failed} | "
             "FailureRate: {failure_rate:.2%}".format(**stat)
         )
@@ -190,7 +393,10 @@ def main():
             "numa_node": NUMA_NODE,
             "task_groups_file": TASK_GROUPS_FILE,
             "same_core_monitor_enabled": True,
+            "cpu_metric_notes": CPU_METRIC_NOTES,
+            "metric_schema_version": 1,
         },
+        "metric_schema": METRIC_SCHEMA,
         "summary": summary,
         "statistics": stats,
         "same_core_function_summary": core_overlap_report["function_level_summary"],
@@ -206,6 +412,20 @@ def main():
     with open(overlap_detail_file, "w", encoding="utf-8") as f:
         json.dump(core_overlap_report, f, indent=2, ensure_ascii=False)
     print(f"[INFO] Same-core per-invocation details saved to {overlap_detail_file}")
+
+    # 保存各函数的原始样本数组，供后续过滤分析和可视化使用
+    raw_samples = {}
+    for func in all_funcs:
+        raw_samples[func] = {
+            "exec_wall_time_s": perf_data.get(func, []),
+        }
+        for metric_name in METRIC_LABELS:
+            raw_samples[func][metric_name] = metric_data.get(func, {}).get(metric_name, [])
+
+    raw_samples_file = f"closed_loop_results/{result_prefix}_raw_samples.json"
+    with open(raw_samples_file, "w", encoding="utf-8") as f:
+        json.dump(raw_samples, f, indent=2, ensure_ascii=False)
+    print(f"[INFO] Raw samples saved to {raw_samples_file}")
 
     # 7) Cleanup workflow temporary data
     cleanup_workflow_data(redis_client, couchdb_client)

@@ -5,7 +5,7 @@ import os
 TEST_DURATION = int(os.environ.get("TEST_DURATION", "1200"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "42"))
 NUMA_NODE = int(os.environ.get("NUMA_NODE", "0"))
-CLIENTS_PER_FUNCTION = int(os.environ.get("CLIENTS_PER_FUNCTION", "2"))
+CLIENTS_PER_FUNCTION = int(os.environ.get("CLIENTS_PER_FUNCTION", "5"))
 
 # Group files
 TASK_GROUPS_FILE = os.environ.get("TASK_GROUPS_FILE", "baseline_groups.json")
@@ -60,4 +60,4 @@ WORKFLOW_CACHE_PATTERNS = [
     "*compute*",
     "*count*",
 ]
-TARGET_CONTAINERS = 2
+TARGET_CONTAINERS = 5
