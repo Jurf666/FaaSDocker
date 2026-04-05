@@ -18,7 +18,10 @@ class Dispatcher:
     @staticmethod
     def _parse_physical_cores(cpuset_value):
         """
-        根据逻辑核得到物理核
+        Convert cpuset (logical CPUs) to physical core ids.
+        Examples:
+          "2,66" -> [2]
+          "0-3"  -> [0, 1, 2, 3]
         """
         if cpuset_value is None:
             return []
@@ -28,7 +31,7 @@ class Dispatcher:
         else:
             raw_items = str(cpuset_value).split(",")
 
-        logical_cpus = set()#set具有不重复性
+        logical_cpus = set()
         for item in raw_items:
             token = str(item).strip()
             if not token:
@@ -37,6 +40,8 @@ class Dispatcher:
                 logical_cpus.add(int(token))
             except ValueError:
                 continue
+
+        # SMT sibling offset is 64 in this environment
         return sorted({cpu - 64 if cpu >= 64 else cpu for cpu in logical_cpus})
 
     def get_or_create_manager(self, function_name, cpuset_cpus=None):
@@ -68,6 +73,7 @@ class Dispatcher:
 
         Timing semantics:
           - use only runner.run() internal exec+main timing
+          - do not use outer /run wrapper timing
         """
         request_id = f"req-{uuid.uuid4().hex[:8]}"
         manager = self.get_or_create_manager(function_name)
@@ -79,11 +85,23 @@ class Dispatcher:
             host_port, container_id = manager.get_container_for_request()
             if not host_port:
                 raise Exception(f"No container available for {function_name}")
+            '''
+            #用于1period-2client模式
             selected_cpuset, affinity_lease_id = manager.apply_request_affinity(
                 container_id,
                 request_id=request_id,
                 wait_timeout=1200,
             )
+
+            '''
+            #用于其它模式
+            selected_cpuset, affinity_lease_id = manager.apply_request_affinity_free(
+                container_id,
+                request_id=request_id,
+                max_containers_per_core=5,
+            )
+            
+
             if not selected_cpuset:
                 raise Exception(f"Affinity allocation failed for {function_name}")
 
@@ -124,6 +142,19 @@ class Dispatcher:
             func_main_start_ns = proxy_result.get("func_main_start_ns")
             func_main_end_ns = proxy_result.get("func_main_end_ns")
             func_duration_ns = proxy_result.get("func_duration_ns")
+            func_cpu_time = proxy_result.get("func_cpu_time")
+            func_cpu_time_ns = proxy_result.get("func_cpu_time_ns")
+            process_cpu_time = proxy_result.get("process_cpu_time", func_cpu_time)
+            process_cpu_time_ns = proxy_result.get("process_cpu_time_ns", func_cpu_time_ns)
+            container_cpu_time = proxy_result.get("container_cpu_time")
+            container_cpu_time_ns = proxy_result.get("container_cpu_time_ns")
+            cgroup_cpu_stat_path = proxy_result.get("cgroup_cpu_stat_path")
+            cgroup_cpu_usage_source = proxy_result.get("cgroup_cpu_usage_source")
+            cgroup_nr_periods_delta = proxy_result.get("cgroup_nr_periods_delta")
+            cgroup_nr_throttled_delta = proxy_result.get("cgroup_nr_throttled_delta")
+            cgroup_throttled_time_ns_delta = proxy_result.get("cgroup_throttled_time_ns_delta")
+            cgroup_throttled_time_seconds_delta = proxy_result.get("cgroup_throttled_time_seconds_delta")
+            cgroup_throttle_ratio_delta = proxy_result.get("cgroup_throttle_ratio_delta")
 
             physical_cores = self._parse_physical_cores(selected_cpuset)
             if not physical_cores:
@@ -140,6 +171,12 @@ class Dispatcher:
                 final_result = proxy_result.get("output_keys", {})
             else:
                 final_result = proxy_result.get("func_result")
+
+            if proxy_result.get("error"):
+                final_result = {
+                    "error": proxy_result.get("error"),
+                    "traceback": proxy_result.get("traceback"),
+                }
 
             if isinstance(final_result, dict):
                 out = dict(final_result)
@@ -159,6 +196,19 @@ class Dispatcher:
                     "func_main_start_ns": func_main_start_ns,
                     "func_main_end_ns": func_main_end_ns,
                     "func_duration_ns": func_duration_ns,
+                    "func_cpu_time": func_cpu_time,
+                    "func_cpu_time_ns": func_cpu_time_ns,
+                    "process_cpu_time": process_cpu_time,
+                    "process_cpu_time_ns": process_cpu_time_ns,
+                    "container_cpu_time": container_cpu_time,
+                    "container_cpu_time_ns": container_cpu_time_ns,
+                    "cgroup_cpu_stat_path": cgroup_cpu_stat_path,
+                    "cgroup_cpu_usage_source": cgroup_cpu_usage_source,
+                    "cgroup_nr_periods_delta": cgroup_nr_periods_delta,
+                    "cgroup_nr_throttled_delta": cgroup_nr_throttled_delta,
+                    "cgroup_throttled_time_ns_delta": cgroup_throttled_time_ns_delta,
+                    "cgroup_throttled_time_seconds_delta": cgroup_throttled_time_seconds_delta,
+                    "cgroup_throttle_ratio_delta": cgroup_throttle_ratio_delta,
                 }
             )
             return out

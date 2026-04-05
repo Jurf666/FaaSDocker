@@ -85,7 +85,7 @@ class FunctionManager:
     def _acquire_request_cpuset_lease(self, request_id=None, wait_timeout=1200):
         """
         针对baseline模式，用于1period2client条件下，发送请求时随机不重叠绑核心
-        在 baseline 大池模式下申请一个“逻辑核租约”（lease）。同一逻辑核在被 release 前不会再次分配（运行时不重叠）。
+        在 baseline 大池模式下申请一个"逻辑核租约"（lease）。同一逻辑核在被 release 前不会再次分配（运行时不重叠）。
         返回：(chosen_cpuset, lease_id)
         """
         if not self._is_baseline_pool or not self._baseline_pool_key:
@@ -188,7 +188,7 @@ class FunctionManager:
                 data = self.containers.get(container_id)
                 if not data:
                     return None, None
-                # 对于非“请求级绑核”模式，返回容器固定 cpuset
+                # 对于非"请求级绑核"模式，返回容器固定 cpuset
                 # （没有时回退到 manager cpuset），便于在 __meta__ 中观测。
                 return data.get("fixed_cpuset") or self.cpuset_cpus, None
 
@@ -211,9 +211,98 @@ class FunctionManager:
             return chosen_cpuset, lease_id
         except Exception as e:
             self.release_request_affinity_lease(lease_id)
+            with self.lock:
+                if container_id in self.containers:
+                    self.containers[container_id]["last_cpuset"] = None
             print(f"[Affinity] Failed to update cpuset for {container_id[:12]}: {e}")
             return None, None
 
+    def apply_request_affinity_free(self, container_id, request_id=None, max_containers_per_core=None):
+        """
+        在请求发送前应用"自由版" affinity：
+          - 若指定 max_containers_per_core（即 n），则在持有锁的情况下统计
+            当前 busy 容器在各物理核上的分布，筛选出绑定数 < n 的物理核，
+            再从中随机选择一个，并原子地写入 last_cpuset，避免并发竞争；
+            若无满足条件的物理核，则回退到全量随机选择。
+          - 不检查该物理核当前是否已被其他请求占用
+          - 返回该物理核对应的 cpuset + None
+        """
+        del request_id  # 预留参数，保持接口一致
+
+        with self.lock:
+            data = self.containers.get(container_id)
+            if not data:
+                return None, None
+            container_obj = data["container_obj"]
+
+            chosen_cpuset = None
+            if self._physical_candidates:
+                if max_containers_per_core is not None:
+                    # 仅统计正在执行请求（busy）的容器，idle 容器的 last_cpuset 是历史残留不计入。
+                    # 同时跳过 container_id 本身：它的 last_cpuset 是上次请求的旧值，
+                    # 此次调用正是要把它移走，计入旧核会导致虚高。
+                    core_counts = {}
+                    for cid, cdata in self.containers.items():
+                        if cid == container_id:
+                            continue
+                        if cdata.get("status") != "busy":
+                            continue
+                        cpuset = cdata.get("last_cpuset")
+                        if not cpuset:
+                            continue
+                        for cpu_str in cpuset.split(","):
+                            cpu_str = cpu_str.strip()
+                            if not cpu_str:
+                                continue
+                            try:
+                                cpu_id = int(cpu_str)
+                                if cpu_id < 64:
+                                    core_counts[cpu_id] = core_counts.get(cpu_id, 0) + 1
+                            except ValueError:
+                                continue
+
+                    filtered = [
+                        c for c in self._physical_candidates
+                        if core_counts.get(c, 0) < max_containers_per_core
+                    ]
+                    candidates = filtered if filtered else self._physical_candidates
+                    if not filtered:
+                        print(
+                            f"[Affinity-Free] All physical cores have >= {max_containers_per_core} "
+                            f"busy containers for {self.function_name}, falling back to full pool"
+                        )
+                else:
+                    candidates = self._physical_candidates
+
+                chosen_physical = random.choice(candidates)
+                sibling_cpus = [
+                    cpu for cpu in (chosen_physical, chosen_physical + 64)
+                    if cpu in self._cpuset_cpu_list
+                ]
+                chosen_cpuset = (
+                    ",".join(str(cpu) for cpu in sibling_cpus)
+                    if sibling_cpus else str(chosen_physical)
+                )
+
+            if not chosen_cpuset:
+                return data.get("fixed_cpuset") or self.cpuset_cpus, None
+
+            # 在释放锁之前先写入 last_cpuset，使后续并发线程的计数立即可见
+            data["last_cpuset"] = chosen_cpuset
+
+        try:
+            container_obj.update(cpuset_cpus=chosen_cpuset)
+            print(
+                f"[Affinity-Free] Request-level pinning for {self.function_name} "
+                f"{container_id[:12]} -> {chosen_cpuset}"
+            )
+            return chosen_cpuset, None
+        except Exception as e:
+            with self.lock:
+                if container_id in self.containers:
+                    self.containers[container_id]["last_cpuset"] = None
+            print(f"[Affinity-Free] Failed to update cpuset for {container_id[:12]}: {e}")
+            return None, None
     def _wait_for_container_service(self, host_port, timeout=30, check_interval=0.01):
         """轮询容器 /status 接口，直到服务就绪或超时。"""
         start_time = time.time()
@@ -242,13 +331,14 @@ class FunctionManager:
         container_name = f"{self.function_name}-{os.urandom(4).hex()}"
         try:
             print(f"Creating new container '{container_name}' ...")
-            create_cpuset = self._choose_container_create_cpuset()
+            #create_cpuset = self._choose_container_create_cpuset() #用于1period-2client模式
+            create_cpuset = self.cpuset_cpus #用于其它模式
             run_kwargs = {
                 "detach": True,
                 "ports": {f"{self.container_port}/tcp": None},
                 "name": container_name,
                 "cpu_period": 100000,
-                "cpu_quota": 100000,
+                "cpu_quota": 40000,
             }
             
             if create_cpuset:
@@ -535,3 +625,4 @@ class FunctionManager:
             self._remove_container(container_id, data["container_obj"])
 
         print(f"All containers for {self.function_name} stopped and removed.")
+

@@ -10,6 +10,7 @@ __pycache__/
 # 一些结果
 closed_loop_results/
 comparison_results/
+CleanData/
 
 # 本地调试代码
 compare_json_results.py
