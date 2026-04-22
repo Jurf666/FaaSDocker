@@ -11,6 +11,8 @@ __pycache__/
 closed_loop_results/
 comparison_results/
 CleanData/
+controller_logs/
+实验结果/
 
 # 本地调试代码
 compare_json_results.py

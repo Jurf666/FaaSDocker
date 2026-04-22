@@ -4,6 +4,9 @@ import uuid
 import time
 import threading
 from flask import Flask, request, jsonify
+from gevent import monkey
+monkey.patch_all()
+from gevent.pywsgi import WSGIServer
 
 # 引入我们拆分的模块
 from modulesOfController.data_store import DataStore
@@ -259,5 +262,103 @@ def dispatch_single(function_name):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ── 多轮自动化实验同步接口 ────────────────────────────────────────────────────
+# 状态机：
+#   "not_ready"   → controller 启动后默认状态，客户端轮询等待
+#   "ready"       → 服务器调用 /set_ready 后设置，客户端收到后开始 run.py
+#   "client_done" → 客户端完成后调用 /client_done，服务器脚本收到后继续清理下一轮
+_experiment_state = {"status": "not_ready", "round": 0, "mode": ""}
+_experiment_state_lock = threading.Lock()
+_client_done_event = threading.Event()
+
+
+@app.route('/set_ready', methods=['POST'])
+def set_ready():
+    """服务器端脚本调用：标记当前轮次已就绪，通知客户端可以开始。"""
+    body = request.get_json(silent=True) or {}
+    with _experiment_state_lock:
+        _experiment_state["status"] = "ready"
+        _experiment_state["round"] = body.get("round", 0)
+        _experiment_state["mode"] = body.get("mode", "")
+        _client_done_event.clear()
+    return jsonify({"status": "ready", **_experiment_state}), 200
+
+
+@app.route('/experiment_ready', methods=['GET'])
+def experiment_ready():
+    """客户端轮询：查询服务器是否就绪。就绪返回200+ready，否则返回200+not_ready。"""
+    with _experiment_state_lock:
+        state = dict(_experiment_state)
+    return jsonify(state), 200
+
+
+@app.route('/client_done', methods=['POST'])
+def client_done():
+    """客户端完成后调用：通知服务器本轮客户端已跑完。"""
+    body = request.get_json(silent=True) or {}
+    with _experiment_state_lock:
+        _experiment_state["status"] = "client_done"
+    _client_done_event.set()
+    return jsonify({"status": "client_done", "round": body.get("round", 0)}), 200
+
+
+@app.route('/wait_client_done', methods=['GET'])
+def wait_client_done():
+    """服务器端脚本轮询：查询客户端是否已完成本轮。"""
+    done = _client_done_event.is_set()
+    with _experiment_state_lock:
+        state = dict(_experiment_state)
+    return jsonify({"client_done": done, **state}), 200
+
+
+@app.route('/freq_stable', methods=['GET'])
+def freq_stable():
+    """查询 server CPU 频率是否已稳定（供 client 在实验开始前轮询）。
+    稳定条件：所有在线 CPU 的当前频率与最大频率之比 >= 0.95，
+    且连续两次采样（间隔 1s）的频率变化 < 100 MHz。
+    """
+    import glob
+    import os
+
+    def read_khz(path):
+        try:
+            return int(open(path).read().strip())
+        except Exception:
+            return None
+
+    cur_files = sorted(glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"))
+    max_files = sorted(glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_max_freq"))
+
+    if not cur_files:
+        return jsonify({"stable": True, "reason": "no cpufreq sysfs"}), 200
+
+    sample1 = [read_khz(f) for f in cur_files]
+    time.sleep(1)
+    sample2 = [read_khz(f) for f in cur_files]
+    max_freqs = [read_khz(f) for f in max_files]
+
+    valid = [(s1, s2, mx) for s1, s2, mx in zip(sample1, sample2, max_freqs)
+             if s1 and s2 and mx]
+    if not valid:
+        return jsonify({"stable": True, "reason": "unreadable"}), 200
+
+    avg_cur = sum(s2 for _, s2, _ in valid) / len(valid)
+    avg_max = sum(mx for _, _, mx in valid) / len(valid)
+    max_delta_khz = max(abs(s2 - s1) for s1, s2, _ in valid)
+    ratio = avg_cur / avg_max if avg_max else 1.0
+
+    stable = ratio >= 0.95 and max_delta_khz < 100_000  # 100 MHz in kHz
+    return jsonify({
+        "stable": stable,
+        "avg_cur_mhz": round(avg_cur / 1000, 1),
+        "avg_max_mhz": round(avg_max / 1000, 1),
+        "ratio": round(ratio, 4),
+        "max_delta_mhz": round(max_delta_khz / 1000, 1),
+    }), 200
+# ── 多轮自动化实验同步接口 结束 ───────────────────────────────────────────────
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, threaded=True)
+    server = WSGIServer(('0.0.0.0', 5002), app)
+    print("Controller listening on port 5002 (gevent)...")
+    server.serve_forever()
