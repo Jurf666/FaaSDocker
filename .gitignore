@@ -9,6 +9,8 @@ __pycache__/
 
 # 一些结果
 CleanData/
+实验结果/
+client_logs/
 
 # 本地调试代码
 compare_json_results.py

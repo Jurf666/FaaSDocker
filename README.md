@@ -1,7 +1,8 @@
-TASK_GROUPS_FILE=baseline_groups.json python3 run.py > base.log 2>&1
-TASK_GROUPS_FILE=task_groups.json python3 run.py > exp.log 2>&1
+运行实验指令：
+    tmux new -s client
+    source .venv/bin/activate
+    bash ./run_all_experiments.sh 10
 
-python3 jsonAnalyze.py 
-python3 jsonAnalyzeFiltered.py 
-
-python3 visualize.py
+中断实验指令：
+    sudo pkill -f "run_all_experiments.sh"
+    sudo pkill -f "run.py"

@@ -1,120 +1,86 @@
 """
-读取同目录下两个文件并分别导出竞争统计 CSV：
-1) baseline_groups_same_core_overlaps.json
-2) task_groups_same_core_overlaps.json
+same_core_competition_export.py
+================================
+读取 baseline_groups_same_core_overlaps.json 和 task_groups_same_core_overlaps.json，
+统计每个函数的同核竞争情况，导出两个 CSV 文件。
 
-输出（同目录）：
-1) baseline_groups_same_core_competition_summary.csv
-2) task_groups_same_core_competition_summary.csv
+统计字段：
+  - total_executions      : 总调用次数
+  - exclusive_executions  : 无同核竞争的调用次数
+  - exclusive_ratio       : exclusive_executions / total_executions
+  - contend_with_xxx      : 与函数 xxx 同核竞争的调用次数（每个其他函数一列）
 
-统计口径：
-- total_executions：函数总执行次数
-- exclusive_executions：独占物理核执行次数（co_running_functions 为空）
-- contend_with_xxx：与 xxx 在同核发生争用的调用次数（包含自身）
+用法（在 closed_loop_results/ 目录下运行）：
+  python same_core_competition_export.py
 """
 
-import csv
 import json
+import os
 from collections import defaultdict
-from pathlib import Path
+
+import pandas as pd
 
 
-def load_json(path: Path):
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+def load_overlaps(filepath: str) -> list:
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("per_invocation", [])
 
 
-def build_stats(overlap_data):
-    per_invocation = overlap_data.get("per_invocation", [])
+def compute_competition(invocations: list) -> pd.DataFrame:
+    # {func: {other_func: count}}
+    contend_counts: dict = defaultdict(lambda: defaultdict(int))
+    total_counts:   dict = defaultdict(int)
+    exclusive_counts: dict = defaultdict(int)
 
-    all_funcs = set()
-    for row in per_invocation:
-        fn = row.get("function_name")
-        if fn:
-            all_funcs.add(fn)
-        for peer in row.get("co_running_functions", []):
-            pfn = peer.get("function_name")
-            if pfn:
-                all_funcs.add(pfn)
-    all_funcs = sorted(all_funcs)
-
-    total = defaultdict(int)
-    exclusive = defaultdict(int)
-    contend = defaultdict(lambda: defaultdict(int))  # contend[a][b]
-
-    for row in per_invocation:
-        fn = row.get("function_name")
-        if not fn:
+    for record in invocations:
+        func = record.get("function_name")
+        if not func:
             continue
+        overlaps = record.get("overlapping_functions", [])
+        total_counts[func] += 1
+        if not overlaps:
+            exclusive_counts[func] += 1
+        else:
+            for other in overlaps:
+                contend_counts[func][other] += 1
 
-        total[fn] += 1
-        peers = row.get("co_running_functions", []) or []
-
-        if len(peers) == 0:
-            exclusive[fn] += 1
-            continue
-
-        # 同一次调用中，同一函数只计 1 次争用
-        peer_names = {p.get("function_name") for p in peers if p.get("function_name")}
-        for pfn in peer_names:
-            contend[fn][pfn] += 1
-
+    all_funcs = sorted(total_counts.keys())
     rows = []
-    for fn in all_funcs:
-        t = total[fn]
-        ex = exclusive[fn]
+    for func in all_funcs:
         row = {
-            "function_name": fn,
-            "total_executions": t,
-            "exclusive_executions": ex,
-            "non_exclusive_executions": t - ex,
-            "exclusive_ratio": (ex / t) if t > 0 else 0.0,
+            "function":            func,
+            "total_executions":    total_counts[func],
+            "exclusive_executions": exclusive_counts[func],
+            "exclusive_ratio":     exclusive_counts[func] / total_counts[func]
+                                   if total_counts[func] > 0 else 0.0,
         }
-        for peer in all_funcs:
-            row[f"contend_with_{peer}"] = contend[fn][peer]
+        for other in all_funcs:
+            if other == func:
+                continue
+            row[f"contend_with_{other}"] = contend_counts[func].get(other, 0)
         rows.append(row)
 
-    return all_funcs, rows
+    return pd.DataFrame(rows)
 
 
-def write_csv(path: Path, all_funcs, rows):
-    headers = [
-        "function_name",
-        "total_executions",
-        "exclusive_executions",
-        "non_exclusive_executions",
-        "exclusive_ratio",
-    ] + [f"contend_with_{f}" for f in all_funcs]
-
-    with path.open("w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def export_one(input_path: Path, output_path: Path):
-    if not input_path.exists():
-        print(f"[WARN] file not found, skipped: {input_path.name}")
+def process(overlaps_file: str, out_csv: str) -> None:
+    if not os.path.exists(overlaps_file):
+        print(f"[WARN] 找不到文件，跳过: {overlaps_file}")
         return
-    data = load_json(input_path)
-    all_funcs, rows = build_stats(data)
-    write_csv(output_path, all_funcs, rows)
-    print(f"[OK] CSV saved: {output_path.name} | functions={len(all_funcs)} rows={len(rows)}")
-
-
-def main():
-    current_dir = Path(__file__).resolve().parent
-
-    baseline_in = current_dir / "baseline_groups_same_core_overlaps.json"
-    task_in = current_dir / "task_groups_same_core_overlaps.json"
-
-    baseline_out = current_dir / "baseline_groups_same_core_competition_summary.csv"
-    task_out = current_dir / "task_groups_same_core_competition_summary.csv"
-
-    export_one(baseline_in, baseline_out)
-    export_one(task_in, task_out)
+    print(f"正在处理: {overlaps_file} ...")
+    invocations = load_overlaps(overlaps_file)
+    df = compute_competition(invocations)
+    df.to_csv(out_csv, index=False, float_format="%.4f", encoding="utf-8-sig")
+    print(f"成功生成文件: {out_csv}")
 
 
 if __name__ == "__main__":
-    main()
-
+    process(
+        "baseline_groups_same_core_overlaps.json",
+        "baseline_groups_same_core_competition_summary.csv",
+    )
+    process(
+        "task_groups_same_core_overlaps.json",
+        "task_groups_same_core_competition_summary.csv",
+    )

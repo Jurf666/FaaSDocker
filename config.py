@@ -5,7 +5,7 @@ import os
 TEST_DURATION = int(os.environ.get("TEST_DURATION", "1200"))
 RANDOM_SEED = int(os.environ.get("RANDOM_SEED", "42"))
 NUMA_NODE = int(os.environ.get("NUMA_NODE", "0"))
-CLIENTS_PER_FUNCTION = int(os.environ.get("CLIENTS_PER_FUNCTION", "5"))
+CLIENTS_PER_FUNCTION = int(os.environ.get("CLIENTS_PER_FUNCTION", "2"))
 
 # Group files
 TASK_GROUPS_FILE = os.environ.get("TASK_GROUPS_FILE", "baseline_groups.json")
@@ -60,4 +60,8 @@ WORKFLOW_CACHE_PATTERNS = [
     "*compute*",
     "*count*",
 ]
-TARGET_CONTAINERS = 5
+TARGET_CONTAINERS = 2
+
+# Seconds to wait after warmup before starting timed measurement,
+# allowing CPU frequency to settle after container/cache init bursts.
+FREQ_STABILIZE_SECS = int(os.environ.get("FREQ_STABILIZE_SECS", "30"))

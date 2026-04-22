@@ -18,7 +18,6 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-# 与 jsonAnalyze.py 保持一致的白名单
 TASK_METRIC_WHITELIST = [
     "count",
     "mean",
@@ -37,22 +36,20 @@ TASK_METRIC_WHITELIST = [
     "cgroup_throttle_ratio_mean",
 ]
 
-# raw_samples.json 中各 metric 的键名 → 对应 results.json 中的统计字段前缀
 METRIC_KEYS = {
-    "exec_wall_time_s":      None,            # 主指标，统计量直接作为顶层字段
-    "effective_cpu_time_s":  "effective_cpu_time_s",
-    "container_cpu_time_s":  "container_cpu_time_s",
-    "process_cpu_time_s":    "process_cpu_time_s",
-    "cycle_time_s":          "cycle_time_s",
-    "cgroup_nr_periods":     "cgroup_nr_periods",
-    "cgroup_nr_throttled":   "cgroup_nr_throttled",
+    "exec_wall_time_s":        None,
+    "effective_cpu_time_s":    "effective_cpu_time_s",
+    "container_cpu_time_s":    "container_cpu_time_s",
+    "process_cpu_time_s":      "process_cpu_time_s",
+    "cycle_time_s":            "cycle_time_s",
+    "cgroup_nr_periods":       "cgroup_nr_periods",
+    "cgroup_nr_throttled":     "cgroup_nr_throttled",
     "cgroup_throttled_time_s": "cgroup_throttled_time_s",
-    "cgroup_throttle_ratio": "cgroup_throttle_ratio",
+    "cgroup_throttle_ratio":   "cgroup_throttle_ratio",
 }
 
 
 def _clip_p1_p99(values: List[float]) -> np.ndarray:
-    """裁剪至 [p1, p99] 区间，返回 numpy 数组。"""
     arr = np.array(values, dtype=float)
     if len(arr) < 2:
         return arr
@@ -62,7 +59,6 @@ def _clip_p1_p99(values: List[float]) -> np.ndarray:
 
 
 def _compute_stats(arr: np.ndarray) -> Dict[str, Any]:
-    """对裁剪后的数组计算与 jsonAnalyze 一致的统计量。"""
     if len(arr) == 0:
         return {}
     mean = float(np.mean(arr))
@@ -82,24 +78,18 @@ def _compute_stats(arr: np.ndarray) -> Dict[str, Any]:
 
 
 def build_statistics(raw_samples: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    将 raw_samples.json 的内容转换为与 results.json["statistics"] 相同结构的字典。
-    主指标（exec_wall_time_s）的统计量作为顶层字段，其余 metric 以 {metric}_mean 形式附加。
-    """
     statistics: Dict[str, Any] = {}
 
     for func, metrics in raw_samples.items():
-        # 主指标：wall-clock 时间
         wall_values = metrics.get("exec_wall_time_s", [])
         wall_clipped = _clip_p1_p99(wall_values)
         stat = _compute_stats(wall_clipped)
         if not stat:
             continue
 
-        # 附加各 metric 的 mean（与 results.json 的 metric_means 对齐）
         for metric_key, label in METRIC_KEYS.items():
             if label is None:
-                continue  # exec_wall_time_s 已在顶层处理
+                continue
             values = metrics.get(metric_key, [])
             if not values:
                 stat[f"{label}_mean"] = 0.0
@@ -113,7 +103,6 @@ def build_statistics(raw_samples: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def flatten_statistics(statistics: Dict[str, Any], source_label: str) -> List[Dict[str, Any]]:
-    """将 statistics 字典展平为 DataFrame 行，格式与 jsonAnalyze.flatten_json_data 一致。"""
     rows = []
     for task_name, metrics in statistics.items():
         row = {"Task": task_name, "Source": source_label, "Type": "Task"}

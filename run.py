@@ -199,13 +199,48 @@ def main():
     init_controller_managers(cgroup_configs, func_to_group)
     wait_for_warmup(func_to_group)
 
-    # 3) Init storage clients and workflow caches
+    # 3) Init storage clients; clean up stale workflow data before warming up
     redis_client = init_redis_client()
     couchdb_client = init_couchdb_client()
+    cleanup_workflow_data(redis_client, couchdb_client)
     workflow_caches = prepare_workflow_caches(redis_client, couchdb_client)
 
     # Clear warmup samples before real test
     clear_perf_data()
+
+    # Wait for CPU frequency to stabilize on the server before starting timed measurement.
+    # Polls /freq_stable (which samples cur_freq twice with 1s gap); falls back to
+    # FREQ_STABILIZE_SECS fixed sleep if the endpoint is unavailable or times out.
+    _freq_wait_start = time.monotonic()
+    _freq_stable_timeout = max(FREQ_STABILIZE_SECS * 3, 120)
+    _freq_stable = False
+    print(f"[INFO] Waiting for CPU frequency to stabilize (timeout={_freq_stable_timeout}s)...")
+    while time.monotonic() - _freq_wait_start < _freq_stable_timeout:
+        try:
+            _resp = requests.get(f"{CONTROLLER_URL}/freq_stable", timeout=5)
+            _data = _resp.json()
+            if _data.get("stable"):
+                _elapsed = time.monotonic() - _freq_wait_start
+                print(
+                    f"[INFO] CPU frequency stable after {_elapsed:.1f}s "
+                    f"({_data.get('avg_cur_mhz')} MHz / {_data.get('avg_max_mhz')} MHz, "
+                    f"ratio={_data.get('ratio')}, delta={_data.get('max_delta_mhz')} MHz)"
+                )
+                _freq_stable = True
+                break
+            else:
+                print(
+                    f"[INFO] Freq not yet stable: {_data.get('avg_cur_mhz')} MHz, "
+                    f"ratio={_data.get('ratio')}, delta={_data.get('max_delta_mhz')} MHz"
+                )
+        except Exception as _e:
+            print(f"[WARN] /freq_stable unavailable ({_e}), falling back to fixed sleep")
+            time.sleep(FREQ_STABILIZE_SECS)
+            _freq_stable = True
+            break
+        time.sleep(2)
+    if not _freq_stable:
+        print(f"[WARN] Frequency did not stabilize within {_freq_stable_timeout}s, proceeding anyway")
 
     # 4) Build client configs
     client_configs = []
@@ -218,9 +253,8 @@ def main():
     # 5) Run load test
     print(f"\n[INFO] Launching {len(client_configs)} clients...")
     start_time = time.time()
-    end_deadline = start_time + TEST_DURATION
+    end_deadline = time.monotonic_ns() + TEST_DURATION * 1_000_000_000
 
-    '''
     try:
         requests.post(
             f"{CONTROLLER_URL}/start_monitor",
@@ -229,8 +263,7 @@ def main():
         )
     except Exception as e:
         print(f"[WARN] Failed to start monitor: {e}")
-    '''
-    
+
     executor = ThreadPoolExecutor(max_workers=len(client_configs))
     client_futures = []
     for idx, (func_name, payload) in enumerate(client_configs):
@@ -240,13 +273,11 @@ def main():
         future.result()
     executor.shutdown(wait=True)
 
-    '''
     try:
         requests.post(f"{CONTROLLER_URL}/stop_monitor", timeout=5)
     except Exception as e:
         print(f"[WARN] Failed to stop monitor: {e}")
-    '''
-    
+
     # 6) Aggregate base metrics
     total_time = time.time() - start_time
     perf_data = get_perf_data()

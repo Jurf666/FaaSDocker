@@ -193,7 +193,7 @@ def client_worker(client_id, func_name, payload, end_time):
     previous_send_ns = None
 
     try:
-        while time.time() < end_time:
+        while time.monotonic_ns() < end_time:
             send_start_ns = time.monotonic_ns()
             cycle_time_s = None
             if previous_send_ns is not None:

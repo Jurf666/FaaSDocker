@@ -25,7 +25,6 @@ TASK_METRIC_WHITELIST = [
 
 
 def _flatten_dict(obj: Dict[str, Any], out: Dict[str, Any], prefix: str = "") -> None:
-    """把嵌套字典拍平成单层 key（使用点号拼接）。"""
     for key, value in obj.items():
         new_key = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
@@ -35,7 +34,6 @@ def _flatten_dict(obj: Dict[str, Any], out: Dict[str, Any], prefix: str = "") ->
 
 
 def flatten_json_data(json_data: Dict[str, Any], source_label: str) -> List[Dict[str, Any]]:
-    """把结果 JSON 展平为任务级行。"""
     rows: List[Dict[str, Any]] = []
 
     stats = json_data.get("statistics", {})
@@ -51,11 +49,6 @@ def flatten_json_data(json_data: Dict[str, Any], source_label: str) -> List[Dict
 
 
 def _calc_change_percent(base_series: pd.Series, exp_series: pd.Series) -> pd.Series:
-    """
-    变化率公式：(Exp - Base) / Base * 100
-    - Base=0 且 Exp=0 -> 0
-    - Base=0 且 Exp!=0 -> NaN，避免无穷大污染
-    """
     base_num = pd.to_numeric(base_series, errors="coerce")
     exp_num = pd.to_numeric(exp_series, errors="coerce")
 
@@ -69,7 +62,7 @@ def _calc_change_percent(base_series: pd.Series, exp_series: pd.Series) -> pd.Se
     return change
 
 
-def _collect_available_metrics(df_merged: pd.DataFrame) -> set[str]:
+def _collect_available_metrics(df_merged: pd.DataFrame) -> set:
     ignore_base_cols = {"Source_Base"}
     return {
         c[:-5]
