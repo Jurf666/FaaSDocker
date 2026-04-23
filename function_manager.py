@@ -338,7 +338,7 @@ class FunctionManager:
                 "ports": {f"{self.container_port}/tcp": None},
                 "name": container_name,
                 "cpu_period": 100000,
-                "cpu_quota": 50000,
+                "cpu_quota": 40000,
             }
             
             if create_cpuset:

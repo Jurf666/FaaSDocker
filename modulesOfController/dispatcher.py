@@ -98,7 +98,7 @@ class Dispatcher:
             selected_cpuset, affinity_lease_id = manager.apply_request_affinity_free(
                 container_id,
                 request_id=request_id,
-                max_containers_per_core=2,
+                max_containers_per_core=5,
             )
             
 
